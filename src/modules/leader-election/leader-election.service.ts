@@ -10,6 +10,10 @@ import { LeaderDemotedEvent } from './events/leader-demoted.event';
 import { LeaderPromotedEvent } from './events/leader-promoted.event';
 import { IK8sLease, K8sLeaseClient } from './k8s-lease.client';
 
+function formatK8sMicroTime(date = new Date()): string {
+    return date.toISOString().replace(/\.(\d{3})Z$/, '.$1000Z');
+}
+
 @Injectable()
 export class LeaderElectionService implements OnApplicationBootstrap, OnApplicationShutdown {
     private readonly logger = new Logger(LeaderElectionService.name);
@@ -148,7 +152,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     }
 
     private async tryCreateAndAcquire(): Promise<void> {
-        const now = new Date().toISOString();
+        const now = formatK8sMicroTime();
         const leasePayload: IK8sLease = {
             apiVersion: 'coordination.k8s.io/v1',
             kind: 'Lease',
@@ -173,7 +177,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     }
 
     private async tryRenew(lease: IK8sLease): Promise<void> {
-        const now = new Date().toISOString();
+        const now = formatK8sMicroTime();
         const updatedLease: IK8sLease = {
             ...lease,
             spec: {
@@ -194,7 +198,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     }
 
     private async tryAcquire(lease: IK8sLease): Promise<void> {
-        const now = new Date().toISOString();
+        const now = formatK8sMicroTime();
         const transitions = (lease.spec.leaseTransitions ?? 0) + 1;
         const updatedLease: IK8sLease = {
             ...lease,
