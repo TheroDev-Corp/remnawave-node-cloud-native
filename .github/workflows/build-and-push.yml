@@ -21,6 +21,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint & typecheck
+        run: |
+          npm run check
+          npm run typecheck
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

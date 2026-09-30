@@ -1,4 +1,5 @@
 import dns from 'node:dns/promises';
+import os from 'node:os';
 
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
@@ -162,7 +163,10 @@ export class PeerSyncService implements OnApplicationBootstrap {
             const localIps = new Set<string>();
 
             const ifaces = os.networkInterfaces();
-            for (const iface of Object.values(ifaces)) {
+            for (const iface of Object.values(ifaces) as (
+                | os.NetworkInterfaceInfo[]
+                | undefined
+            )[]) {
                 if (!iface) continue;
                 for (const info of iface) {
                     localIps.add(info.address);
