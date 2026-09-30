@@ -1,7 +1,7 @@
 import { hasCapNetAdmin, killSockets } from 'sockdestroy';
 
-import { IEventHandler, EventsHandler } from '@nestjs/cqrs';
 import { Logger, OnModuleInit } from '@nestjs/common';
+import { IEventHandler, EventsHandler } from '@nestjs/cqrs';
 
 import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
 

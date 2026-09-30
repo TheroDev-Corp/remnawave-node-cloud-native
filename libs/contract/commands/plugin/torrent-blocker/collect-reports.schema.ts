@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { TorrentBlockerReportSchema } from '../../../models';
 import { REST_API } from '../../../api';
+import { TorrentBlockerReportSchema } from '../../../models';
 
 export namespace CollectReportsCommand {
     export const url = REST_API.PLUGIN.TORRENT_BLOCKER.COLLECT;

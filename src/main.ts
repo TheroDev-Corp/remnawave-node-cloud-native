@@ -167,7 +167,8 @@ async function bootstrap(): Promise<void> {
 
     logger.info('\n' + (await getStartMessage(config.getOrThrow('NODE_PORT'), app)) + '\n');
 
-    if (!(await acquireInstanceLock())) {
+    const disableInstanceLock = config.getOrThrow('DISABLE_INSTANCE_LOCK');
+    if (!disableInstanceLock && !(await acquireInstanceLock())) {
         logger.error('\n' + getDuplicateInstanceMessage() + '\n');
     }
 

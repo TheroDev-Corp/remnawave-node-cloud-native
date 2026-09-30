@@ -1,9 +1,9 @@
-import { CqrsModule } from '@nestjs/cqrs';
 import { Module } from '@nestjs/common';
+import { CqrsModule } from '@nestjs/cqrs';
 
+import { COMMANDS } from './commands';
 import { HandlerController } from './handler.controller';
 import { HandlerService } from './handler.service';
-import { COMMANDS } from './commands';
 @Module({
     imports: [CqrsModule],
     controllers: [HandlerController],

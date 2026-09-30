@@ -1,10 +1,14 @@
 import { isIP } from 'node:net';
 
-import { Logger } from '@nestjs/common';
-import { IEventHandler, EventsHandler } from '@nestjs/cqrs';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 
+import { TypedConfigService } from '@common/config/app-config';
+import { CidrMatcher } from '@common/utils/cidr-matcher';
 import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
 import { TorrentBlockerReportModel, XrayWebhookSchema } from '@libs/contracts/models';
+
+import { TraefikService } from '@integration-modules/traefik/traefik.service';
 
 import { NftService } from '../../services/nft.service';
 import { PluginStateService } from '../../services/plugin-state.service';
@@ -13,14 +17,26 @@ import { XrayWebhookEvent } from './xray-webhook.event';
 const SOURCE_REGEX = /^(?:(?:tcp|udp):)?(?:\[(.+?)\]|(.+?))(?::(\d+))?$/;
 const WEBHOOK_TIMEOUT_MS = 5_000;
 
+@Injectable()
 @EventsHandler(XrayWebhookEvent)
 export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
     public readonly logger = new Logger(XrayWebhookHandler.name);
+    private readonly trustedProxiesMatcher: CidrMatcher;
 
     constructor(
         private readonly pluginState: PluginStateService,
         private readonly nftService: NftService,
-    ) {}
+        private readonly configService: TypedConfigService,
+        @Optional() private readonly traefikService?: TraefikService,
+    ) {
+        const trustedProxiesStr = this.configService.getOrThrow('TRUSTED_PROXIES');
+        const cidrs = trustedProxiesStr
+            .split(',')
+            .map((c) => c.trim())
+            .filter(Boolean);
+        this.trustedProxiesMatcher = new CidrMatcher(cidrs);
+    }
+
     async handle(event: XrayWebhookEvent) {
         const ct = getTime();
         try {
@@ -35,7 +51,6 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             this.logger.debug(JSON.stringify(parsed.data, null, 2));
 
             const webhook = parsed.data;
-
             const ip = this.extractIp(webhook.source);
 
             if (!ip || !webhook.email) return;
@@ -49,18 +64,37 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             }
 
             const blockDuration = this.pluginState.torrentBlocker.duration!;
+            const isProxiedByTraefik = this.trustedProxiesMatcher.contains(ip);
 
             let blocked = false;
 
-            try {
-                await this.nftService.blockIp(ip, blockDuration);
-                blocked = true;
-
-                this.logger.log(
-                    `[TORRENT-BLOCKER] IP: ${ip}, user: ${webhook.email}, blocked: ${blocked}, duration: ${blockDuration}s`,
+            if (isProxiedByTraefik) {
+                // Client is connected through Reverse Proxy (Traefik with PROXY protocol)
+                // Do NOT block this IP with local nftables/sockdestroy (it would drop Traefik itself!)
+                this.logger.warn(
+                    `[TORRENT-BLOCKER] Detected torrent from proxied connection (client: ${ip}, user: ${webhook.email}). Routing ban to Traefik/Panel.`,
                 );
-            } catch (error) {
-                this.logger.error(`Failed to block IP ${ip}: ${error}`);
+
+                if (this.traefikService?.isEnabled) {
+                    try {
+                        await this.traefikService.banIp(ip, blockDuration);
+                        blocked = true;
+                    } catch (error) {
+                        this.logger.error(`Failed to ban IP ${ip} in Traefik: ${error}`);
+                    }
+                }
+            } else {
+                // Direct connection (e.g. Hysteria 2 / TUIC UDP) -> block in Pod Network Namespace
+                try {
+                    await this.nftService.blockIp(ip, blockDuration);
+                    blocked = true;
+
+                    this.logger.log(
+                        `[TORRENT-BLOCKER] Direct IP: ${ip}, user: ${webhook.email}, blocked: ${blocked}, duration: ${blockDuration}s`,
+                    );
+                } catch (error) {
+                    this.logger.error(`Failed to block direct IP ${ip} in nftables: ${error}`);
+                }
             }
 
             const report: TorrentBlockerReportModel = {

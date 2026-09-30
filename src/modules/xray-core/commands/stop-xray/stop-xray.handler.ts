@@ -1,8 +1,8 @@
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { Logger } from '@nestjs/common';
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 
-import { StopXrayCommand } from './stop-xray.command';
 import { XrayService } from '../../xray.service';
+import { StopXrayCommand } from './stop-xray.command';
 
 @CommandHandler(StopXrayCommand)
 export class StopXrayHandler implements ICommandHandler<StopXrayCommand> {

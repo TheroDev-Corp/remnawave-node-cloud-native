@@ -26,6 +26,13 @@ export const configSchema = z
         NFTABLES_LOGGING: booleanString('true'),
         NFTABLES_ACCEPT_REPLY_TRAFFIC: booleanString('false'),
         SNI_VERIFICATION: booleanString('false'),
+        K8S_LEADER_ELECTION_ENABLED: booleanString('false'),
+        K8S_LEASE_NAME: z.string().default('remnanode-leader'),
+        PEER_HEADLESS_SERVICE: z.string().optional(),
+        TRUSTED_PROXIES: z.string().default('10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'),
+        DISABLE_INSTANCE_LOCK: booleanString('false'),
+        TRAEFIK_INTEGRATION_ENABLED: booleanString('false'),
+        TRAEFIK_MIDDLEWARE_NAME: z.string().default('reality-whitelist'),
     })
 
     .superRefine((data, ctx) => {

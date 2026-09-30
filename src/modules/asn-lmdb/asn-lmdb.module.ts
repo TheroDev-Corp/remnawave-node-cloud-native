@@ -1,5 +1,5 @@
-import { CqrsModule } from '@nestjs/cqrs';
 import { Module } from '@nestjs/common';
+import { CqrsModule } from '@nestjs/cqrs';
 
 import { AsnLmdbService } from './asn-lmdb.service';
 import { QUERIES } from './queries';

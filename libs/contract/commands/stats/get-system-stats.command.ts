@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { NodeSystemStatsSchema } from '../../models';
 import { REST_API } from '../../api';
+import { NodeSystemStatsSchema } from '../../models';
 export namespace GetSystemStatsCommand {
     export const url = REST_API.STATS.GET_SYSTEM_STATS;
 

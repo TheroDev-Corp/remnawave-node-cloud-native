@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { colorize } from 'json-colorizer';
-import { killSockets } from 'sockdestroy';
 import consola from 'consola';
-import http from 'node:http';
 import fs from 'fs';
+import { colorize } from 'json-colorizer';
+import http from 'node:http';
+import { killSockets } from 'sockdestroy';
 
 const enum CLI_ACTIONS {
     DUMP_CONFIG = 'dump-config',
