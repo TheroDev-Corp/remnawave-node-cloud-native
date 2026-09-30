@@ -3,7 +3,7 @@ variable "TAG" {
 }
 
 variable "REGISTRIES" {
-    default = ["remnawave/node", "ghcr.io/remnawave/node"]
+    default = ["ghcr.io/therodev-corp/remnawave-node-cloud-native"]
 }
 
 variable "VARIANTS" {
@@ -24,7 +24,7 @@ target "node" {
 
     context    = "."
     dockerfile = "docker/Dockerfile"
-    platforms  = ["linux/amd64", "linux/arm64"]
+    platforms  = ["linux/amd64"]
 
     args = {
         INTEGRATIONS = VARIANTS[variant].integrations
