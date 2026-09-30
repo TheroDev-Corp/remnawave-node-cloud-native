@@ -1,7 +1,7 @@
 import dns from 'node:dns/promises';
 import os from 'node:os';
 
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
 
 import { TypedConfigService } from '@common/config/app-config';
@@ -36,7 +36,9 @@ export class PeerSyncService implements OnApplicationBootstrap {
         private readonly configService: TypedConfigService,
         private readonly leaderElectionService: LeaderElectionService,
         private readonly internalService: InternalService,
+        @Inject(forwardRef(() => XrayService))
         private readonly xrayService: XrayService,
+        @Inject(forwardRef(() => HandlerService))
         private readonly handlerService: HandlerService,
         private readonly commandBus: CommandBus,
     ) {

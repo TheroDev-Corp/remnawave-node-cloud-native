@@ -8,5 +8,6 @@ import { HandlerService } from './handler.service';
     imports: [CqrsModule],
     controllers: [HandlerController],
     providers: [HandlerService, ...COMMANDS],
+    exports: [HandlerService],
 })
 export class HandlerModule {}
