@@ -1,0 +1,184 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullName := include "remnanode.fullname" . -}}
+{{- $websiteName := printf "%s-website" $fullName -}}
+{{- $domain := .Values.global.domain -}}
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $fullName }}-ws-headers
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+      Upgrade: "websocket"
+      Connection: "Upgrade"
+
+---
+{{- if .Values.ingress.tls.redirect }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $fullName }}-redirect
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+{{- end }}
+
+---
+# 1. Main Website (Fallback/Camouflage)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}-web
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ $domain }}`)
+      kind: Rule
+      services:
+        - name: {{ $websiteName }} # Routing to the separated website service
+          port: 80
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    {{- if .Values.ingress.tls.secretName }}
+    secretName: {{ .Values.ingress.tls.secretName | quote }}
+    {{- else if .Values.ingress.tls.certResolver }}
+    certResolver: {{ .Values.ingress.tls.certResolver | quote }}
+    {{- else }}
+    {}
+    {{- end }}
+  {{- end }}
+
+---
+{{- if .Values.ingress.tls.redirect }}
+# 1.1 HTTP to HTTPS Redirect (Stub Site)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-http-redirect
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-redirect@kubernetescrd" .Release.Namespace $fullName }}
+spec:
+  rules:
+    - host: {{ $domain }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $websiteName }} # Routing to the separated website service
+                port:
+                  number: 80
+{{- end }}
+
+---
+# Routing based on Inbounds
+{{- range .Values.inbounds }}
+
+{{- /* 2. WebSocket & XHTTP Routing */}}
+{{- if or (eq .mode "ingress-path") (eq .mode "ingress-xhttp") }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}-{{ .name }}
+  labels:
+    {{- include "remnanode.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ $domain }}`) && PathPrefix(`{{ .path }}`)
+      kind: Rule
+      {{- if eq .mode "ingress-path" }}
+      middlewares:
+        - name: {{ $fullName }}-ws-headers
+      {{- end }}
+      services:
+        - name: {{ $fullName }}
+          port: {{ .port }}
+          passHostHeader: true
+  {{- if $.Values.ingress.tls.enabled }}
+  tls:
+    {{- if $.Values.ingress.tls.secretName }}
+    secretName: {{ $.Values.ingress.tls.secretName | quote }}
+    {{- else if $.Values.ingress.tls.certResolver }}
+    certResolver: {{ $.Values.ingress.tls.certResolver | quote }}
+    {{- else }}
+    {}
+    {{- end }}
+  {{- end }}
+---
+{{- end }}
+
+{{- /* 3. gRPC Routing */}}
+{{- if eq .mode "ingress-grpc" }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}-{{ .name }}
+  labels:
+    {{- include "remnanode.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ $domain }}`) && PathPrefix(`/{{ .serviceName }}`)
+      kind: Rule
+      services:
+        - name: {{ $fullName }}
+          port: {{ .port }}
+          passHostHeader: true
+          scheme: h2c
+  {{- if $.Values.ingress.tls.enabled }}
+  tls:
+    {{- if $.Values.ingress.tls.secretName }}
+    secretName: {{ $.Values.ingress.tls.secretName | quote }}
+    {{- else if $.Values.ingress.tls.certResolver }}
+    certResolver: {{ $.Values.ingress.tls.certResolver | quote }}
+    {{- else }}
+    {}
+    {{- end }}
+  {{- end }}
+---
+{{- end }}
+
+{{- /* 4. Reality/Trojan (SNI TCP Routing) */}}
+{{- if eq .mode "ingress-sni" }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: {{ $fullName }}-{{ .name }}
+  labels:
+    {{- include "remnanode.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: {{ range $i, $d := .sni }}{{ if $i }} || {{ end }}HostSNI(`{{ $d }}`){{ end }}
+      services:
+        - name: {{ $fullName }}
+          port: {{ .port }}
+          # Forward real client IP to Xray via PROXY Protocol v2
+          proxyProtocol:
+            version: 2
+  # For SNI (Reality), TLS is always passthrough
+  tls:
+    passthrough: true
+---
+{{- end }}
+
+{{- end }}{{/* End range inbounds */}}
+{{- end }}{{/* End if ingress.enabled */}}

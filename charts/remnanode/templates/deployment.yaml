@@ -1,0 +1,204 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "remnanode.fullname" . }}
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  replicas: {{ default 1 .Values.replicaCount }}
+  strategy:
+    type: {{ if gt (int (default 1 .Values.replicaCount)) 1 }}RollingUpdate{{ else }}Recreate{{ end }}
+    {{- if gt (int (default 1 .Values.replicaCount)) 1 }}
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "remnanode.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "remnanode.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.geodata.enabled }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-downloader.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if and .Values.ioThrottling (and .Values.ioThrottling.enabled .Values.ioThrottling.cgroupIoMax) }}
+        io.container.cgroup.io.max: {{ .Values.ioThrottling.cgroupIoMax | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.leaderElection.enabled }}
+      serviceAccountName: {{ include "remnanode.fullname" . }}-sa
+      automountServiceAccountToken: true
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      hostNetwork: {{ if .Values.node.hostNetwork }}true{{ else }}false{{ end }}
+      dnsPolicy: {{ if .Values.node.hostNetwork }}ClusterFirstWithHostNet{{ else }}ClusterFirst{{ end }}
+
+      {{- if .Values.geodata.enabled }}
+      initContainers:
+        - name: init-downloader
+          image: curlimages/curl:8.18.0
+          command: ["/bin/sh", "/scripts/download.sh", "init"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: geodata
+              mountPath: /data
+      {{- end }}
+
+      containers:
+        - name: remnanode
+          image: "{{ .Values.node.image.repository }}:{{ .Values.node.image.tag }}"
+          imagePullPolicy: {{ .Values.node.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          env:
+            - name: NODE_PORT
+              value: {{ .Values.node.apiPort | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.leaderElection.enabled }}
+            - name: K8S_LEADER_ELECTION_ENABLED
+              value: "true"
+            - name: K8S_LEASE_NAME
+              value: {{ .Values.leaderElection.leaseName | quote }}
+            {{- end }}
+            {{- if .Values.peerSync.enabled }}
+            - name: PEER_HEADLESS_SERVICE
+              value: {{ printf "%s-headless" (include "remnanode.fullname" .) | quote }}
+            {{- end }}
+            {{- if .Values.node.disableInstanceLock }}
+            - name: DISABLE_INSTANCE_LOCK
+              value: "true"
+            {{- end }}
+            {{- if .Values.node.trustedProxies }}
+            - name: TRUSTED_PROXIES
+              value: {{ .Values.node.trustedProxies | quote }}
+            {{- end }}
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ coalesce .Values.node.existingSecret (printf "%s-secrets" (include "remnanode.fullname" .)) }}
+                  key: SECRET_KEY
+            {{- if .Values.geodata.enabled }}
+            - name: XRAY_LOCATION_ASSET
+              value: /data
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.node.apiPort }}
+              name: api
+              protocol: TCP
+              {{- if .Values.node.hostNetwork }}
+              hostPort: {{ .Values.node.apiPort }}
+              {{- end }}
+            {{- range .Values.inbounds }}
+            - containerPort: {{ .port }}
+              name: {{ lower (default "tcp" .protocol) }}-{{ .port }}
+              protocol: {{ default "TCP" .protocol | upper }}
+              {{- if and $.Values.node.hostNetwork (eq .mode "direct") }}
+              hostPort: {{ .port }}
+              {{- end }}
+            {{- end }}
+          {{- if and .Values.node.probes (and .Values.node.probes.liveness .Values.node.probes.liveness.enabled) }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: {{ .Values.node.apiPort }}
+            initialDelaySeconds: {{ .Values.node.probes.liveness.initialDelaySeconds | default 5 }}
+            periodSeconds: {{ .Values.node.probes.liveness.periodSeconds | default 10 }}
+          {{- end }}
+          {{- if and .Values.node.probes (and .Values.node.probes.readiness .Values.node.probes.readiness.enabled) }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: {{ .Values.node.apiPort }}
+            initialDelaySeconds: {{ .Values.node.probes.readiness.initialDelaySeconds | default 2 }}
+            periodSeconds: {{ .Values.node.probes.readiness.periodSeconds | default 3 }}
+          {{- end }}
+          volumeMounts:
+            {{- if and .Values.tmpfs .Values.tmpfs.enabled }}
+            - name: ram-tmp
+              mountPath: /tmp
+            {{- if and .Values.tmpfs.cache .Values.tmpfs.cache.enabled }}
+            - name: ram-cache
+              mountPath: {{ .Values.tmpfs.cache.mountPath }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.geodata.enabled }}
+            - name: geodata
+              mountPath: /data
+            {{- end }}
+            {{- if .Values.node.tlsMount.enabled }}
+            - name: tls-cert
+              mountPath: {{ .Values.node.tlsMount.mountPath }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+        {{- if .Values.geodata.enabled }}
+        - name: background-updater
+          image: curlimages/curl:8.18.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[SIDECAR] Started. Will update geodata every 12 hours in background."
+              while true; do
+                sleep 43200
+                /bin/sh /scripts/download.sh update
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: geodata
+              mountPath: /data
+        {{- end }}
+
+      volumes:
+        {{- if and .Values.tmpfs .Values.tmpfs.enabled }}
+        - name: ram-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ default "64Mi" (and .Values.tmpfs.tmp .Values.tmpfs.tmp.sizeLimit) }}
+        {{- if and .Values.tmpfs.cache .Values.tmpfs.cache.enabled }}
+        - name: ram-cache
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ default "128Mi" .Values.tmpfs.cache.sizeLimit }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.geodata.enabled }}
+        - name: geodata
+          persistentVolumeClaim:
+            claimName: {{ include "remnanode.fullname" . }}-geodata
+        - name: scripts
+          configMap:
+            name: {{ include "remnanode.fullname" . }}-downloader-script
+            defaultMode: 0755
+        {{- end }}
+        {{- if .Values.node.tlsMount.enabled }}
+        - name: tls-cert
+          secret:
+            secretName: {{ .Values.node.tlsMount.secretName }}
+            defaultMode: {{ .Values.node.tlsMount.defaultMode }}
+        {{- end }}
