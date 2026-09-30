@@ -13,7 +13,7 @@ import { XrayService } from './xray.service';
     imports: [InternalModule, CqrsModule],
     providers: [XrayService, XrayProcessService, GeodataService, CoreLoaderService, ...COMMANDS],
     controllers: [XrayController],
-    exports: [XrayService],
+    exports: [XrayService, XrayProcessService],
 })
 export class XrayModule implements OnModuleDestroy {
     private readonly logger = new Logger(XrayModule.name);
