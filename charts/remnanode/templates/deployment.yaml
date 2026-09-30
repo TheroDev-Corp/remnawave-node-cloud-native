@@ -62,6 +62,8 @@ spec:
           env:
             - name: NODE_PORT
               value: {{ .Values.node.apiPort | quote }}
+            - name: HEALTH_PORT
+              value: {{ default 3000 .Values.node.healthPort | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -100,6 +102,8 @@ spec:
           ports:
             - containerPort: {{ .Values.node.apiPort }}
               name: api
+            - containerPort: {{ default 3000 .Values.node.healthPort }}
+              name: health
               protocol: TCP
               {{- if .Values.node.hostNetwork }}
               hostPort: {{ .Values.node.apiPort }}
@@ -116,7 +120,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /health/live
-              port: {{ .Values.node.apiPort }}
+              port: {{ default 3000 .Values.node.healthPort }}
             initialDelaySeconds: {{ .Values.node.probes.liveness.initialDelaySeconds | default 5 }}
             periodSeconds: {{ .Values.node.probes.liveness.periodSeconds | default 10 }}
           {{- end }}
@@ -124,7 +128,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /health/ready
-              port: {{ .Values.node.apiPort }}
+              port: {{ default 3000 .Values.node.healthPort }}
             initialDelaySeconds: {{ .Values.node.probes.readiness.initialDelaySeconds | default 2 }}
             periodSeconds: {{ .Values.node.probes.readiness.periodSeconds | default 3 }}
           {{- end }}

@@ -76,6 +76,7 @@ node:
     tag: 'dev'
     pullPolicy: Always
   apiPort: 2222
+  healthPort: 3000
   resources:
     requests:
       cpu: '100m'

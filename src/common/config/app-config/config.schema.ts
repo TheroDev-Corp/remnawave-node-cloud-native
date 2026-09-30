@@ -17,6 +17,10 @@ export const configSchema = z
         NODE_PORT: z.string().transform((port) => {
             return parseInt(port, 10);
         }),
+        HEALTH_PORT: z
+            .string()
+            .optional()
+            .transform((port) => (port ? parseInt(port, 10) : undefined)),
         SECRET_KEY: z.string(),
         JWT_PUBLIC_KEY: z.string().optional(),
         DISABLE_HASHED_SET_CHECK: booleanString(),

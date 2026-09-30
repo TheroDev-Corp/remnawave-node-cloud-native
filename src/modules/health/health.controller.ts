@@ -14,40 +14,62 @@ export class HealthController {
 
     @Get('live')
     async live(@Res() res: Response): Promise<Response> {
-        // Liveness probe: checks if node process is up and Xray process is running
-        try {
-            const xrayStatus = await this.xrayProcessService.getStatus();
-            if (xrayStatus.up) {
-                return res.status(HttpStatus.OK).json({
-                    status: 'ok',
-                    xray: 'up',
-                    pid: xrayStatus.pid,
+        // Liveness probe: returns 200 OK as long as the process is alive.
+        // Standby replicas in leader election do not run Xray, so we only check Xray if this node is leader.
+        if (this.leaderElectionService.isLeader) {
+            try {
+                const xrayStatus = await this.xrayProcessService.getStatus();
+                if (!xrayStatus.up) {
+                    return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+                        status: 'degraded',
+                        role: 'leader',
+                        xray: 'down',
+                    });
+                }
+            } catch (error) {
+                return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+                    status: 'error',
+                    message: error instanceof Error ? error.message : String(error),
                 });
             }
-
-            return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
-                status: 'degraded',
-                xray: 'down',
-            });
-        } catch (error) {
-            return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
-                status: 'error',
-                message: error instanceof Error ? error.message : String(error),
-            });
         }
+
+        return res.status(HttpStatus.OK).json({
+            status: 'ok',
+            role: this.leaderElectionService.isLeader ? 'leader' : 'follower',
+            identity: this.leaderElectionService.identity,
+        });
     }
 
     @Get('ready')
     async ready(@Res() res: Response): Promise<Response> {
-        // Readiness probe: 200 OK only for Active Leader (so K8s Service routes traffic only to Leader)
+        // Readiness probe: 200 OK only for Active Leader (so K8s Service routes client traffic only to Leader)
         const isLeader = this.leaderElectionService.isLeader;
 
         if (isLeader) {
-            return res.status(HttpStatus.OK).json({
-                status: 'ok',
-                role: 'leader',
-                identity: this.leaderElectionService.identity,
-            });
+            try {
+                const xrayStatus = await this.xrayProcessService.getStatus();
+                if (!xrayStatus.up) {
+                    return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+                        status: 'degraded',
+                        role: 'leader',
+                        xray: 'down',
+                    });
+                }
+
+                return res.status(HttpStatus.OK).json({
+                    status: 'ok',
+                    role: 'leader',
+                    xray: 'up',
+                    pid: xrayStatus.pid,
+                    identity: this.leaderElectionService.identity,
+                });
+            } catch (error) {
+                return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+                    status: 'error',
+                    message: error instanceof Error ? error.message : String(error),
+                });
+            }
         }
 
         // Return 503 for Standby follower so it is excluded from Service Endpoints

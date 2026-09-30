@@ -64,6 +64,8 @@ spec:
           ports:
             - name: api
               containerPort: 2222
+            - name: health
+              containerPort: 3000
             - name: xray-reality
               containerPort: 443
               protocol: TCP
@@ -73,13 +75,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /health/live
-              port: 2222
+              port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health/ready
-              port: 2222
+              port: 3000
             initialDelaySeconds: 2
             periodSeconds: 3
 ---
