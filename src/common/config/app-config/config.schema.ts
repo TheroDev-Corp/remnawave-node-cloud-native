@@ -27,8 +27,6 @@ export const configSchema = z
         INTERNAL_REST_TOKEN: z.string(),
         INTERNAL_SOCKET_PATH: z.string(),
         XTLS_API_SOCKET_PATH: z.string(),
-        NFTABLES_LOGGING: booleanString('true'),
-        NFTABLES_ACCEPT_REPLY_TRAFFIC: booleanString('false'),
         SNI_VERIFICATION: booleanString('false'),
         K8S_LEADER_ELECTION_ENABLED: booleanString('false'),
         K8S_LEASE_NAME: z.string().default('remnanode-leader'),

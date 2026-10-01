@@ -8,7 +8,6 @@ import { CidrMatcher } from '@common/utils/cidr-matcher';
 import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
 import { TorrentBlockerReportModel, XrayWebhookSchema } from '@libs/contracts/models';
 
-import { NftService } from '../../services/nft.service';
 import { PluginStateService } from '../../services/plugin-state.service';
 import { UserSuspensionService } from '../../services/user-suspension.service';
 import { XrayWebhookEvent } from './xray-webhook.event';
@@ -24,7 +23,6 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
 
     constructor(
         private readonly pluginState: PluginStateService,
-        private readonly nftService: NftService,
         private readonly userSuspensionService: UserSuspensionService,
         private readonly configService: TypedConfigService,
     ) {
@@ -63,36 +61,14 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             }
 
             const blockDuration = this.pluginState.torrentBlocker.duration!;
-            const isProxiedByTraefik = this.trustedProxiesMatcher.contains(ip);
+            this.logger.warn(
+                `[TORRENT-BLOCKER] Detected torrent (client: ${ip}, user: ${webhook.email}). Suspending user for ${blockDuration}s...`,
+            );
 
-            let blocked = false;
-
-            if (isProxiedByTraefik) {
-                // Client is connected through Reverse Proxy (Traefik with PROXY protocol)
-                // Do NOT block this IP with local nftables/sockdestroy (it would drop Traefik itself!)
-                // Instead, suspend user directly in Xray Core for the specified duration
-                this.logger.warn(
-                    `[TORRENT-BLOCKER] Detected torrent from proxied connection (client: ${ip}, user: ${webhook.email}). Suspending user for ${blockDuration}s...`,
-                );
-
-                blocked = await this.userSuspensionService.suspendUser(
-                    webhook.email,
-                    blockDuration,
-                );
-            } else {
-                // Direct connection (e.g. Hysteria 2 / TUIC UDP) -> block in Pod Network Namespace + suspend user
-                try {
-                    await this.nftService.blockIp(ip, blockDuration);
-                    await this.userSuspensionService.suspendUser(webhook.email, blockDuration);
-                    blocked = true;
-
-                    this.logger.log(
-                        `[TORRENT-BLOCKER] Direct IP: ${ip}, user: ${webhook.email}, blocked: ${blocked}, duration: ${blockDuration}s`,
-                    );
-                } catch (error) {
-                    this.logger.error(`Failed to block direct IP ${ip} in nftables: ${error}`);
-                }
-            }
+            const blocked = await this.userSuspensionService.suspendUser(
+                webhook.email,
+                blockDuration,
+            );
 
             const report: TorrentBlockerReportModel = {
                 actionReport: {

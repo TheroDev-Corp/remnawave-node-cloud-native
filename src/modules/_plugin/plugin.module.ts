@@ -9,7 +9,6 @@ import { EVENTS } from './events';
 import { PluginController } from './plugin.controller';
 import { PluginService } from './plugin.service';
 import { QUERIES } from './queries';
-import { NftService } from './services/nft.service';
 import { PluginStateService } from './services/plugin-state.service';
 import { PreStartService } from './services/pre-start.service';
 import { UserSuspensionService } from './services/user-suspension.service';
@@ -26,7 +25,6 @@ import { UserSuspensionService } from './services/user-suspension.service';
         PluginService,
         PluginStateService,
         UserSuspensionService,
-        NftService,
         PreStartService,
         ...QUERIES,
         ...EVENTS,

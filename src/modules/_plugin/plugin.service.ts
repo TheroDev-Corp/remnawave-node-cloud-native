@@ -14,7 +14,6 @@ import { StopXrayCommand } from '../xray-core/commands/stop-xray';
 import { SyncRequestDto } from './dtos';
 import { GenericResponseModel } from './models';
 import { TorrentBlockerReportsResponseModel } from './models/torrent-blocker-reports.response.model';
-import { NftService } from './services/nft.service';
 import { PluginStateService } from './services/plugin-state.service';
 
 @Injectable()
@@ -24,7 +23,6 @@ export class PluginService {
 
     constructor(
         private readonly state: PluginStateService,
-        private readonly nftService: NftService,
         private readonly commandBus: CommandBus,
         private readonly queryBus: QueryBus,
     ) {}
@@ -85,14 +83,10 @@ export class PluginService {
 
             this.state.resetState();
             this.state.cleanUpActivePlugin();
-            await this.nftService.recreateTables();
 
             this.syncConnectionDrop(pluginData, sharedMap);
             this.syncTorrentBlocker(pluginData, sharedMap);
             this.syncPreStart(pluginData);
-
-            await this.syncIngressFilter(pluginData, sharedMap);
-            await this.syncEgressFilter(pluginData, sharedMap);
 
             this.state.updateConfigHash(configHash);
             this.state.setPluginConfigDetails(plugin.uuid, plugin.name);
@@ -137,7 +131,6 @@ export class PluginService {
     public async resetPlugins(): Promise<void> {
         this.state.resetState();
         this.state.cleanUpActivePlugin();
-        await this.nftService.recreateTables();
     }
 
     private syncConnectionDrop(pluginData: TNodePlugin, sharedMap: Map<string, string[]>): void {
@@ -170,41 +163,9 @@ export class PluginService {
         );
     }
 
-    private async syncIngressFilter(
-        pluginData: TNodePlugin,
-        sharedMap: Map<string, string[]>,
-    ): Promise<void> {
-        if (!pluginData.ingressFilter) return;
-        if (!pluginData.ingressFilter.enabled) return;
-        if (!this.nftService.isAvailable) return;
-
-        const ips = this.resolveIpList(pluginData.ingressFilter.blockedIps ?? [], sharedMap);
-
-        await this.nftService.syncIngressFilter(ips);
-
-        this.logger.log(`[PLUGIN] Ingress Filter: ${ips.length} IPs synced.`);
-    }
-
-    private async syncEgressFilter(
-        pluginData: TNodePlugin,
-        sharedMap: Map<string, string[]>,
-    ): Promise<void> {
-        if (!pluginData.egressFilter) return;
-        if (!pluginData.egressFilter.enabled) return;
-        if (!this.nftService.isAvailable) return;
-
-        const ips = this.resolveIpList(pluginData.egressFilter.blockedIps ?? [], sharedMap);
-        const ports = pluginData.egressFilter.blockedPorts ?? [];
-
-        await this.nftService.syncEgressFilter({ ips, ports });
-
-        this.logger.log(`[PLUGIN] Egress Filter: ${ips.length} IPs, ${ports.length} ports synced.`);
-    }
-
     private syncTorrentBlocker(pluginData: TNodePlugin, sharedMap: Map<string, string[]>): void {
         if (!pluginData.torrentBlocker) return;
         if (!pluginData.torrentBlocker.enabled) return;
-        if (!this.nftService.isAvailable) return;
 
         const { blockDuration, ignoreLists, rulePlacement } = pluginData.torrentBlocker;
 

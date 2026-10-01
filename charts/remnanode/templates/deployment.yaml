@@ -56,9 +56,6 @@ spec:
         - name: remnanode
           image: "{{ .Values.node.image.repository }}:{{ .Values.node.image.tag }}"
           imagePullPolicy: {{ .Values.node.image.pullPolicy | default "IfNotPresent" }}
-          securityContext:
-            capabilities:
-              add: ["NET_ADMIN"]
           env:
             - name: NODE_PORT
               value: {{ .Values.node.apiPort | quote }}

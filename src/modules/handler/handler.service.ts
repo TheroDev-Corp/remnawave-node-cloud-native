@@ -1,8 +1,6 @@
 import ems from 'enhanced-ms';
-import { hasCapNetAdmin } from 'sockdestroy';
 
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { EventBus } from '@nestjs/cqrs';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { XtlsApi } from '@remnawave/xtls-sdk';
 import { InjectXtls } from '@remnawave/xtls-sdk-nestjs';
@@ -15,7 +13,6 @@ import {
 import { fail, ok, TResult } from '@common/types';
 import { ERRORS } from '@libs/contracts/constants/errors';
 
-import { DropConnectionsEvent } from '../_plugin/events/drop-connections';
 import { InternalService } from '../internal/internal.service';
 import {
     AddUserRequestDto,
@@ -28,45 +25,24 @@ import {
 import { AddUserResponseModel, RemoveUserResponseModel, GenericResponseModel } from './models';
 
 @Injectable()
-export class HandlerService implements OnModuleInit {
+export class HandlerService {
     private readonly logger = new Logger(HandlerService.name);
-    private capNetAdminAvailable = false;
 
     constructor(
         @InjectXtls() private readonly xtlsApi: XtlsApi,
         private readonly internalService: InternalService,
-        private readonly eventBus: EventBus,
     ) {}
-
-    public async onModuleInit(): Promise<void> {
-        try {
-            if (!hasCapNetAdmin()) {
-                this.capNetAdminAvailable = false;
-                this.logger.warn('CAP_NET_ADMIN is not available.');
-            } else {
-                this.capNetAdminAvailable = true;
-                this.logger.log('[OK] CAP_NET_ADMIN is available');
-            }
-        } catch (error: unknown) {
-            this.logger.error(error);
-        }
-    }
 
     public async addUser(data: AddUserRequestDto): Promise<TResult<AddUserResponseModel>> {
         try {
             const { data: requestData, hashData } = data;
             const response: Array<ISdkResponse<AddUserResponseModelFromSdk>> = [];
             const userId = requestData[0].username;
-            let userIps: string[] | null = null;
 
             this.internalService.storeUserDefinition(userId, data);
 
             for (const item of requestData) {
                 this.internalService.addXtlsConfigInbound(item.tag);
-            }
-
-            if (hashData.prevVlessUuid) {
-                userIps = await this.getUserIps(userId);
             }
 
             for (const tag of this.internalService.getXtlsConfigInbounds()) {
@@ -79,10 +55,6 @@ export class HandlerService implements OnModuleInit {
                 } else {
                     await this.internalService.removeUserFromInbound(tag, hashData.vlessUuid);
                 }
-            }
-
-            if (userIps && hashData.prevVlessUuid) {
-                this.eventBus.publish(new DropConnectionsEvent(userIps));
             }
 
             for (const item of requestData) {
@@ -207,8 +179,6 @@ export class HandlerService implements OnModuleInit {
                 return ok(new RemoveUserResponseModel(true, null));
             }
 
-            const userIps = await this.getUserIps(username);
-
             this.internalService.removeUserDefinition(username);
 
             for (const tag of inboundTags) {
@@ -219,8 +189,6 @@ export class HandlerService implements OnModuleInit {
                 await this.internalService.removeUserFromInbound(tag, hashData.vlessUuid);
                 response.push(tempRes);
             }
-
-            this.eventBus.publish(new DropConnectionsEvent(userIps));
 
             if (response.every((res) => !res.isOk)) {
                 this.logger.error(JSON.stringify(response, null, 2));
@@ -437,8 +405,6 @@ export class HandlerService implements OnModuleInit {
 
                 this.internalService.removeUserDefinition(userId);
 
-                const userIps = await this.getUserIps(userId);
-
                 for (const tag of inboundTags) {
                     this.logger.debug(`Removing user: ${userId} from tag: ${tag}`);
 
@@ -447,8 +413,6 @@ export class HandlerService implements OnModuleInit {
                     await this.internalService.removeUserFromInbound(tag, hashUuid);
                     removeUsersResponse.push(tempRes);
                 }
-
-                this.eventBus.publish(new DropConnectionsEvent(userIps));
             }
 
             if (removeUsersResponse.every((res) => !res.isOk)) {
@@ -481,42 +445,17 @@ export class HandlerService implements OnModuleInit {
     }
 
     public async dropUsersConnections(
-        data: DropUsersConnectionsRequestDto,
+        _data: DropUsersConnectionsRequestDto,
     ): Promise<TResult<GenericResponseModel>> {
-        try {
-            const { userIds } = data;
-
-            for (const userId of userIds) {
-                const userIps = await this.getUserIps(userId);
-                this.eventBus.publish(new DropConnectionsEvent(userIps));
-            }
-
-            return ok(new GenericResponseModel(true));
-        } catch (error) {
-            this.logger.error(error);
-            return ok(new GenericResponseModel(false));
-        }
+        return ok(new GenericResponseModel(true));
     }
 
-    public async dropIps(data: DropIpsRequestDto): Promise<TResult<GenericResponseModel>> {
-        try {
-            const { ips } = data;
-
-            this.eventBus.publish(new DropConnectionsEvent(ips));
-
-            return ok(new GenericResponseModel(true));
-        } catch (error) {
-            this.logger.error(error);
-            return ok(new GenericResponseModel(false));
-        }
+    public async dropIps(_data: DropIpsRequestDto): Promise<TResult<GenericResponseModel>> {
+        return ok(new GenericResponseModel(true));
     }
 
     public async getUserIps(userId: string): Promise<string[] | null> {
         try {
-            if (!this.capNetAdminAvailable) {
-                return null;
-            }
-
             const userIps = await this.xtlsApi.stats.rawClient.getStatsOnlineIpList({
                 name: `user>>>${userId}>>>online`,
                 reset: true,

@@ -1,5 +1,4 @@
 import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { EventBus } from '@nestjs/cqrs';
 
 import { XtlsApi } from '@remnawave/xtls-sdk';
 import { InjectXtls } from '@remnawave/xtls-sdk-nestjs';
@@ -8,7 +7,6 @@ import { AddUserRequestDto } from '../../handler/dtos';
 import { HandlerService } from '../../handler/handler.service';
 import { InternalService } from '../../internal/internal.service';
 import { PeerSyncService } from '../../peer-sync/peer-sync.service';
-import { DropConnectionsEvent } from '../events/drop-connections';
 
 interface ISuspendedUserState {
     timer: NodeJS.Timeout;
@@ -28,7 +26,6 @@ export class UserSuspensionService implements OnModuleDestroy {
         @InjectXtls() private readonly xtlsApi: XtlsApi,
         @Inject(forwardRef(() => PeerSyncService))
         private readonly peerSyncService: PeerSyncService,
-        private readonly eventBus: EventBus,
     ) {}
 
     onModuleDestroy(): void {
@@ -77,7 +74,6 @@ export class UserSuspensionService implements OnModuleDestroy {
             }
 
             const cachedDef = this.internalService.getUserDefinition(userId);
-            const userIps = await this.handlerService.getUserIps(userId);
 
             this.logger.warn(
                 `[SUSPENSION] Suspending user "${userId}" for ${durationSeconds}s from all Xray inbounds...`,
@@ -91,11 +87,6 @@ export class UserSuspensionService implements OnModuleDestroy {
                 } catch (error) {
                     this.logger.debug(`Could not remove user ${userId} from tag ${tag}: ${error}`);
                 }
-            }
-
-            // Drop active connections
-            if (userIps && userIps.length > 0) {
-                this.eventBus.publish(new DropConnectionsEvent(userIps));
             }
 
             const unbanAt = Date.now() + durationSeconds * 1000;
