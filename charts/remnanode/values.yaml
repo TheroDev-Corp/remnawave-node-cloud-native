@@ -105,8 +105,8 @@ node:
       periodSeconds: 10
     readiness:
       enabled: true
-      initialDelaySeconds: 2
-      periodSeconds: 3
+      initialDelaySeconds: 1
+      periodSeconds: 1
 
   # TLS certificate settings (required for Hysteria/QUIC)
   tlsMount:

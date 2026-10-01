@@ -126,8 +126,8 @@ spec:
             httpGet:
               path: /health/ready
               port: {{ default 3000 .Values.node.healthPort }}
-            initialDelaySeconds: {{ .Values.node.probes.readiness.initialDelaySeconds | default 2 }}
-            periodSeconds: {{ .Values.node.probes.readiness.periodSeconds | default 3 }}
+            initialDelaySeconds: {{ .Values.node.probes.readiness.initialDelaySeconds | default 1 }}
+            periodSeconds: {{ .Values.node.probes.readiness.periodSeconds | default 1 }}
           {{- end }}
           volumeMounts:
             {{- if and .Values.tmpfs .Values.tmpfs.enabled }}

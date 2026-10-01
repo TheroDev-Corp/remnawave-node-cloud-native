@@ -26,6 +26,12 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     private readonly client: K8sLeaseClient;
     private readonly bootTime = Date.now();
+    private leaderSince = 0;
+    private isDrainingState = false;
+    private drainTimer: NodeJS.Timeout | null = null;
+    private readonly minLeaderTenureMs = 30_000;
+    private readonly drainDurationMs = 10_000;
+
     private suppressAcquisitionUntil = 0;
     private leaderState = false;
     private currentResourceVersion: string | null = null;
@@ -74,6 +80,14 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         return this.bootTime;
     }
 
+    public get isDraining(): boolean {
+        return this.isDrainingState;
+    }
+
+    public get isServingTraffic(): boolean {
+        return this.leaderState || this.isDrainingState;
+    }
+
     async onApplicationBootstrap(): Promise<void> {
         if (!this.enabled) {
             this.logger.log('K8s Leader Election disabled, running as standalone Leader.');
@@ -99,11 +113,19 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             clearInterval(this.loopTimer);
             this.loopTimer = null;
         }
+        if (this.drainTimer) {
+            clearTimeout(this.drainTimer);
+            this.drainTimer = null;
+        }
 
         if (this.leaderState && this.enabled) {
             this.logger.log(`Releasing lease "${this.leaseName}" due to shutdown (${signal})...`);
             await this.releaseLease();
             this.setLeader(false);
+
+            // Graceful connection drain before exit without needing preStop sleep
+            this.logger.log(`Gracefully draining connections for 5s before exit...`);
+            await new Promise((resolve) => setTimeout(resolve, 5000));
         }
     }
 
@@ -257,6 +279,12 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         this.leaderState = leader;
 
         if (!previous && leader) {
+            this.leaderSince = Date.now();
+            this.isDrainingState = false;
+            if (this.drainTimer) {
+                clearTimeout(this.drainTimer);
+                this.drainTimer = null;
+            }
             this.logger.log(`🏆 Pod "${this.podName}" promoted to LEADER.`);
             this.eventBus.publish(new LeaderPromotedEvent(this.podName));
         } else if (previous && !leader) {
@@ -276,6 +304,15 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             return { success: true, reason: 'already_follower' };
         }
 
+        // Anti-flapping: Minimum leader tenure (30s) so new pods don't immediately yield to each other
+        const tenureMs = Date.now() - this.leaderSince;
+        if (tenureMs < this.minLeaderTenureMs) {
+            this.logger.warn(
+                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}": leader tenure ${tenureMs}ms < ${this.minLeaderTenureMs}ms (stabilization period).`,
+            );
+            return { success: false, reason: 'leader_stabilizing' };
+        }
+
         if (candidateBootTime <= this.bootTime) {
             this.logger.warn(
                 `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}" (candidateBootTime ${candidateBootTime} <= local ${this.bootTime})`,
@@ -284,15 +321,27 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         }
 
         this.logger.log(
-            `[LEADER-ELECTION] 🤝 Gracefully yielding leadership to newer pod "${candidatePod}". Stepping down...`,
+            `[LEADER-ELECTION] 🤝 Gracefully yielding leadership to newer pod "${candidatePod}". Releasing lease and entering 10s draining overlap...`,
         );
 
-        // Suppress re-acquisition on this pod for 15s so newer pod has ample time to acquire
-        this.suppressAcquisitionUntil = Date.now() + 15_000;
+        // Suppress re-acquisition on this pod for 20s so newer pod has ample time to acquire
+        this.suppressAcquisitionUntil = Date.now() + 20_000;
 
-        // Release lease and step down to follower
+        // Release lease immediately so candidate pod claims it at once
         await this.releaseLease();
-        this.setLeader(false);
+
+        // Enter draining state: keep readiness probe 200 OK for 10s so both pods overlap in K8s Service Endpoints!
+        this.isDrainingState = true;
+        if (this.drainTimer) {
+            clearTimeout(this.drainTimer);
+        }
+        this.drainTimer = setTimeout(() => {
+            this.logger.log(
+                `[LEADER-ELECTION] Draining period completed. Stepping down to standby.`,
+            );
+            this.isDrainingState = false;
+            this.setLeader(false);
+        }, this.drainDurationMs);
 
         return { success: true };
     }

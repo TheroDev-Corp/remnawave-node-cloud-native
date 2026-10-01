@@ -106,7 +106,7 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
         });
 
         app.get('/health/ready', async (_req: Request, res: Response) => {
-            if (!this.leaderElectionService.isLeader) {
+            if (!this.leaderElectionService.isServingTraffic) {
                 return res.status(503).json({
                     status: 'standby',
                     role: 'follower',
@@ -126,9 +126,12 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
                 // Xray may not be started yet on initial boot before panel pushes config
             }
 
+            const role = this.leaderElectionService.isDraining ? 'leader-draining' : 'leader';
+
             return res.status(200).json({
                 status: 'ok',
-                role: 'leader',
+                role,
+                draining: this.leaderElectionService.isDraining,
                 xray: xrayUp ? 'up' : 'down',
                 pid: xrayPid,
                 identity: this.leaderElectionService.identity,
