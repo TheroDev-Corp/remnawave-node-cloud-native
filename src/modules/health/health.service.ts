@@ -28,17 +28,14 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
         const app: Express = express();
 
         app.get('/health/live', async (_req: Request, res: Response) => {
-            // Liveness probe: returns 200 as long as Node process is running
-            // On the leader, we can also check if Xray is running if desired,
-            // but standby replicas don't run Xray, so node being alive is sufficient.
             return res.status(200).json({
                 status: 'ok',
                 role: this.leaderElectionService.isLeader ? 'leader' : 'follower',
+                identity: this.leaderElectionService.identity,
             });
         });
 
         app.get('/health/ready', async (_req: Request, res: Response) => {
-            // Readiness probe: 200 OK only for Active Leader (and Xray is up)
             if (!this.leaderElectionService.isLeader) {
                 return res.status(503).json({
                     status: 'standby',
@@ -48,28 +45,24 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
                 });
             }
 
+            let xrayUp = false;
+            let xrayPid: number | null = null;
+
             try {
                 const xrayStatus = await this.xrayProcessService.getStatus();
-                if (!xrayStatus.up) {
-                    return res.status(503).json({
-                        status: 'degraded',
-                        role: 'leader',
-                        xray: 'down',
-                    });
-                }
-
-                return res.status(200).json({
-                    status: 'ok',
-                    role: 'leader',
-                    xray: 'up',
-                    pid: xrayStatus.pid,
-                });
-            } catch (error) {
-                return res.status(503).json({
-                    status: 'error',
-                    message: error instanceof Error ? error.message : String(error),
-                });
+                xrayUp = xrayStatus.up;
+                xrayPid = xrayStatus.pid;
+            } catch {
+                // Xray may not be started yet on initial boot before panel pushes config
             }
+
+            return res.status(200).json({
+                status: 'ok',
+                role: 'leader',
+                xray: xrayUp ? 'up' : 'down',
+                pid: xrayPid,
+                identity: this.leaderElectionService.identity,
+            });
         });
 
         this.server = app.listen(port, '0.0.0.0', () => {
