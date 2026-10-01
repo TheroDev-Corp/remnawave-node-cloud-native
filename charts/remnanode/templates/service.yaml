@@ -6,13 +6,13 @@ metadata:
   labels:
     {{- include "remnanode.labels" . | nindent 4 }}
 spec:
-  type: {{ default "ClusterIP" .Values.node.service.type }}
+  type: {{ dig "service" "type" "ClusterIP" .Values.node }}
   selector:
     {{- include "remnanode.selectorLabels" . | nindent 4 }}
   ports:
     - name: api
-      port: {{ default .Values.node.apiPort .Values.node.service.port }}
-      targetPort: {{ .Values.node.apiPort }}
+      port: {{ dig "service" "port" (default 2222 .Values.node.apiPort) .Values.node }}
+      targetPort: {{ default 2222 .Values.node.apiPort }}
       protocol: TCP
 {{- if .Values.peerSync.enabled }}
 ---

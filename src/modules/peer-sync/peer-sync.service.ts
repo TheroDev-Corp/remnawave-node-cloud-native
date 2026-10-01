@@ -1,4 +1,5 @@
 import dns from 'node:dns/promises';
+import fs from 'node:fs';
 import os from 'node:os';
 
 import {
@@ -36,6 +37,7 @@ export type TPeerReplicationAction =
 export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShutdown {
     private readonly logger = new Logger(PeerSyncService.name);
     private readonly headlessService: string | undefined;
+    private readonly namespace: string;
     private readonly nodePort: number;
     private readonly peerPort: number;
     private readonly secretKey: string;
@@ -58,6 +60,11 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
         this.nodePort = this.configService.getOrThrow('NODE_PORT');
         this.peerPort = this.configService.get('HEALTH_PORT') || 3000;
         this.secretKey = this.configService.getOrThrow('SECRET_KEY');
+
+        const nsFile = '/var/run/secrets/kubernetes.io/serviceaccount/namespace';
+        this.namespace =
+            process.env.POD_NAMESPACE ??
+            (fs.existsSync(nsFile) ? fs.readFileSync(nsFile, 'utf8').trim() : 'remnanode');
 
         if (!this.headlessService) {
             this.logger.log('PEER_HEADLESS_SERVICE is not configured. Standalone mode active.');
@@ -269,27 +276,49 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
         }
     }
 
+    private getResolvedServiceHostname(): string {
+        if (!this.headlessService) return '';
+        if (this.headlessService.includes('.')) {
+            return this.headlessService;
+        }
+        return `${this.headlessService}.${this.namespace}.svc.cluster.local`;
+    }
+
     private async discoverPeerIps(): Promise<string[]> {
         if (!this.headlessService) return [];
 
+        const hostname = this.getResolvedServiceHostname();
+        let addresses: string[] = [];
+
         try {
-            const addresses = await dns.resolve4(this.headlessService);
-            const localIps = new Set<string>();
-
-            const ifaces = os.networkInterfaces();
-            for (const iface of Object.values(ifaces) as (
-                | os.NetworkInterfaceInfo[]
-                | undefined
-            )[]) {
-                if (!iface) continue;
-                for (const info of iface) {
-                    localIps.add(info.address);
-                }
+            addresses = await dns.resolve4(hostname);
+        } catch (error) {
+            this.logger.debug(
+                `[PEER-SYNC] dns.resolve4 failed for "${hostname}": ${error}. Trying dns.lookup...`,
+            );
+            try {
+                const lookupResults = await dns.lookup(this.headlessService, {
+                    all: true,
+                    family: 4,
+                });
+                addresses = lookupResults.map((r) => r.address);
+            } catch (lookupError) {
+                this.logger.warn(
+                    `[PEER-SYNC] Failed to resolve peer addresses for "${hostname}": ${lookupError}`,
+                );
+                return [];
             }
-
-            return addresses.filter((ip) => !localIps.has(ip));
-        } catch {
-            return [];
         }
+
+        const localIps = new Set<string>();
+        const ifaces = os.networkInterfaces();
+        for (const iface of Object.values(ifaces) as (os.NetworkInterfaceInfo[] | undefined)[]) {
+            if (!iface) continue;
+            for (const info of iface) {
+                localIps.add(info.address);
+            }
+        }
+
+        return addresses.filter((ip) => !localIps.has(ip));
     }
 }

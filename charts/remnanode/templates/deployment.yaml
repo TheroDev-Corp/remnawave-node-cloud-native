@@ -11,7 +11,7 @@ spec:
     {{- if gt (int (default 1 .Values.replicaCount)) 1 }}
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: 0
+      maxUnavailable: 1
     {{- end }}
   selector:
     matchLabels:
@@ -80,7 +80,7 @@ spec:
             {{- end }}
             {{- if .Values.peerSync.enabled }}
             - name: PEER_HEADLESS_SERVICE
-              value: {{ printf "%s-headless" (include "remnanode.fullname" .) | quote }}
+              value: {{ printf "%s-headless.%s.svc.cluster.local" (include "remnanode.fullname" .) .Release.Namespace | quote }}
             {{- end }}
             {{- if .Values.node.disableInstanceLock }}
             - name: DISABLE_INSTANCE_LOCK
