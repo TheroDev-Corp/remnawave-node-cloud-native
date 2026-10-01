@@ -30,6 +30,7 @@ export class PeerSyncService implements OnApplicationBootstrap {
     private readonly logger = new Logger(PeerSyncService.name);
     private readonly headlessService: string | undefined;
     private readonly nodePort: number;
+    private readonly peerPort: number;
     private readonly secretKey: string;
 
     constructor(
@@ -44,6 +45,7 @@ export class PeerSyncService implements OnApplicationBootstrap {
     ) {
         this.headlessService = this.configService.getOrThrow('PEER_HEADLESS_SERVICE');
         this.nodePort = this.configService.getOrThrow('NODE_PORT');
+        this.peerPort = this.configService.get('HEALTH_PORT') || 3000;
         this.secretKey = this.configService.getOrThrow('SECRET_KEY');
     }
 
@@ -65,7 +67,7 @@ export class PeerSyncService implements OnApplicationBootstrap {
 
         for (const peerIp of peerIps) {
             try {
-                const url = `http://${peerIp}:${this.nodePort}/internal/peer-sync/apply`;
+                const url = `http://${peerIp}:${this.peerPort}/internal/peer-sync/apply`;
                 await fetch(url, {
                     method: 'POST',
                     headers: {
@@ -115,10 +117,12 @@ export class PeerSyncService implements OnApplicationBootstrap {
      * Export current in-memory Xray configuration and inbounds for new peer startup
      */
     public async exportSnapshot(): Promise<{
-        xrayConfig: Record<string, unknown>;
+        xrayConfig: Record<string, unknown> | null;
+        startXrayRequest: StartXrayCommand.Request | null;
     }> {
         const xrayConfig = await this.internalService.getXrayConfig();
-        return { xrayConfig };
+        const startXrayRequest = this.internalService.getLastStartXrayRequest();
+        return { xrayConfig, startXrayRequest };
     }
 
     /**
@@ -134,19 +138,27 @@ export class PeerSyncService implements OnApplicationBootstrap {
 
         for (const peerIp of peerIps) {
             try {
-                const url = `http://${peerIp}:${this.nodePort}/internal/peer-sync/snapshot`;
+                const url = `http://${peerIp}:${this.peerPort}/internal/peer-sync/snapshot`;
                 const res = await fetch(url, {
                     headers: { 'X-Secret-Key': this.secretKey },
                     signal: AbortSignal.timeout(5000),
                 });
 
                 if (res.ok) {
-                    const data = (await res.json()) as { xrayConfig: Record<string, unknown> };
-                    if (data.xrayConfig && Object.keys(data.xrayConfig).length > 0) {
+                    const data = (await res.json()) as {
+                        xrayConfig: Record<string, unknown> | null;
+                        startXrayRequest: StartXrayCommand.Request | null;
+                    };
+                    if (data.startXrayRequest) {
                         this.logger.log(
-                            `[PEER-SYNC] Successfully retrieved snapshot from ${peerIp}`,
+                            `[PEER-SYNC] Successfully retrieved snapshot from ${peerIp}. Starting local Xray on follower...`,
                         );
-                        // Apply config to Follower's local Xray
+                        await this.xrayService.startXray(data.startXrayRequest, '127.0.0.1');
+                        return;
+                    } else if (data.xrayConfig && Object.keys(data.xrayConfig).length > 0) {
+                        this.logger.log(
+                            `[PEER-SYNC] Successfully retrieved config snapshot from ${peerIp}`,
+                        );
                         this.internalService.setXrayConfig(data.xrayConfig);
                         return;
                     }

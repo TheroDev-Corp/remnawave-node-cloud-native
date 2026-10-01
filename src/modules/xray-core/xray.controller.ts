@@ -5,6 +5,7 @@ import { JwtDefaultGuard } from '@common/guards/jwt-guards';
 import { errorHandler } from '@common/helpers/error-handler.helper';
 import { XRAY_CONTROLLER, XRAY_ROUTES } from '@libs/contracts/api';
 
+import { PeerSyncService } from '../peer-sync/peer-sync.service';
 import {
     GetNodeHealthCheckResponseDto,
     StartXrayRequestDto,
@@ -19,7 +20,10 @@ import { XrayService } from './xray.service';
 export class XrayController {
     private readonly logger = new Logger(XrayController.name);
 
-    constructor(private readonly xrayService: XrayService) {}
+    constructor(
+        private readonly xrayService: XrayService,
+        private readonly peerSyncService: PeerSyncService,
+    ) {}
 
     @Post(XRAY_ROUTES.START)
     public async startXray(
@@ -27,6 +31,7 @@ export class XrayController {
         @Ip() ip: string,
     ): Promise<StartXrayResponseDto> {
         const response = await this.xrayService.startXray(body, ip);
+        void this.peerSyncService.replicateToPeers({ type: 'startXray', body });
         const data = errorHandler(response);
 
         return {

@@ -237,6 +237,7 @@ export class XrayService implements OnApplicationBootstrap {
             }
 
             this.isXrayOnline = true;
+            this.internalService.setLastStartXrayRequest(body);
 
             await this.refreshXrayVersion();
 

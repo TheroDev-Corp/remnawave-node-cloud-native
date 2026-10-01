@@ -14,6 +14,7 @@ export class InternalService {
     private readonly mutex = getSemaphore();
 
     private xrayConfig: null | Record<string, unknown> = null;
+    private lastStartXrayRequest: null | StartXrayCommand.Request = null;
     private emptyConfigHash: null | string = null;
     private inboundsHashMap: Map<string, HashedSet> = new Map();
     private xtlsConfigInbounds: Set<string> = new Set();
@@ -207,7 +208,16 @@ export class InternalService {
         this.xtlsConfigInbounds.add(inboundTag);
     }
 
+    public getLastStartXrayRequest(): null | StartXrayCommand.Request {
+        return this.lastStartXrayRequest;
+    }
+
+    public setLastStartXrayRequest(req: StartXrayCommand.Request): void {
+        this.lastStartXrayRequest = req;
+    }
+
     public cleanup(): void {
+        this.lastStartXrayRequest = null;
         this.logger.log('Cleaning up internal service.');
 
         this.inboundsHashMap.clear();
