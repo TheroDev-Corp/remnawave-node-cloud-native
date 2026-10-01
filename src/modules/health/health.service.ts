@@ -70,6 +70,33 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
             },
         );
 
+        app.post('/internal/leader/yield', verifySecret, async (req: Request, res: Response) => {
+            try {
+                const { candidatePod, candidateBootTime } = req.body as {
+                    candidatePod?: string;
+                    candidateBootTime?: number;
+                };
+
+                if (!candidatePod || typeof candidateBootTime !== 'number') {
+                    res.status(400).json({
+                        error: 'candidatePod and candidateBootTime are required',
+                    });
+                    return;
+                }
+
+                const result = await this.leaderElectionService.yieldLeadership(
+                    candidatePod,
+                    candidateBootTime,
+                );
+
+                res.status(result.success ? 200 : 409).json(result);
+            } catch (error) {
+                res.status(500).json({
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        });
+
         app.get('/health/live', async (_req: Request, res: Response) => {
             return res.status(200).json({
                 status: 'ok',

@@ -45,6 +45,7 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
     private catchUpTimer: NodeJS.Timeout | null = null;
     private isShuttingDown = false;
     private isCatchingUp = false;
+    private hasRequestedYield = false;
 
     constructor(
         private readonly configService: TypedConfigService,
@@ -177,6 +178,7 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
         switch (action.type) {
             case 'startXray':
                 await this.xrayService.startXray(action.body, '127.0.0.1');
+                void this.requestLeadershipHandoff();
                 break;
             case 'addUser':
                 if (this.xrayService.isOnline) {
@@ -258,6 +260,9 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
                                 `[PEER-SYNC] Successfully retrieved snapshot from ${peerIp}. Starting local Xray on follower...`,
                             );
                             await this.xrayService.startXray(data.startXrayRequest, '127.0.0.1');
+
+                            // Now warm hot-standby! Request handoff if this pod is newer than leader (e.g. rolling update)
+                            void this.requestLeadershipHandoff(peerIp);
                             return;
                         } else if (data.xrayConfig && Object.keys(data.xrayConfig).length > 0) {
                             this.logger.log(
@@ -320,5 +325,60 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
         }
 
         return addresses.filter((ip) => !localIps.has(ip));
+    }
+
+    /**
+     * When this follower pod is fully initialized with running Xray (Hot Standby),
+     * request leadership handoff from the existing leader if this pod is newer (e.g. rollout restart).
+     */
+    public async requestLeadershipHandoff(targetPeerIp?: string): Promise<void> {
+        if (this.hasRequestedYield || this.leaderElectionService.isLeader) {
+            return;
+        }
+
+        const peerIps = targetPeerIp ? [targetPeerIp] : await this.discoverPeerIps();
+        if (peerIps.length === 0) return;
+
+        this.hasRequestedYield = true;
+        this.logger.log(
+            `[PEER-SYNC] Requesting graceful leadership handoff from leader(s): ${peerIps.join(', ')}...`,
+        );
+
+        for (const peerIp of peerIps) {
+            try {
+                const url = `http://${peerIp}:${this.peerPort}/internal/leader/yield`;
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Secret-Key': this.secretKey,
+                    },
+                    body: JSON.stringify({
+                        candidatePod: this.leaderElectionService.identity,
+                        candidateBootTime: this.leaderElectionService.startedAt,
+                    }),
+                    signal: AbortSignal.timeout(5000),
+                });
+
+                if (res.ok) {
+                    const data = (await res.json()) as { success: boolean; reason?: string };
+                    if (data.success) {
+                        this.logger.log(
+                            `[PEER-SYNC] 🏆 Leader ${peerIp} yielded leadership. Triggering immediate election cycle to claim lease...`,
+                        );
+                        await this.leaderElectionService.triggerElectionNow();
+                        return;
+                    } else {
+                        this.logger.debug(
+                            `[PEER-SYNC] Leader ${peerIp} did not yield: ${data.reason}`,
+                        );
+                    }
+                }
+            } catch (error) {
+                this.logger.warn(
+                    `[PEER-SYNC] Failed to request leadership yield from ${peerIp}: ${error}`,
+                );
+            }
+        }
     }
 }

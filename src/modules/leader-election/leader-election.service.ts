@@ -25,6 +25,8 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     private readonly renewIntervalMs = 2000;
 
     private readonly client: K8sLeaseClient;
+    private readonly bootTime = Date.now();
+    private suppressAcquisitionUntil = 0;
     private leaderState = false;
     private currentResourceVersion: string | null = null;
     private loopTimer: NodeJS.Timeout | null = null;
@@ -68,6 +70,10 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         return this.enabled;
     }
 
+    public get startedAt(): number {
+        return this.bootTime;
+    }
+
     async onApplicationBootstrap(): Promise<void> {
         if (!this.enabled) {
             this.logger.log('K8s Leader Election disabled, running as standalone Leader.');
@@ -103,6 +109,9 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     private async electionLoop(): Promise<void> {
         if (this.isShuttingDown) return;
+        if (!this.leaderState && Date.now() < this.suppressAcquisitionUntil) {
+            return;
+        }
 
         try {
             const { status, lease } = await this.client.getLease(this.namespace, this.leaseName);
@@ -254,5 +263,45 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             this.logger.warn(`Pod "${this.podName}" demoted to FOLLOWER / STANDBY.`);
             this.eventBus.publish(new LeaderDemotedEvent(this.podName));
         }
+    }
+
+    /**
+     * Gracefully yields leadership to a newer candidate pod (e.g. during rolling update)
+     */
+    public async yieldLeadership(
+        candidatePod: string,
+        candidateBootTime: number,
+    ): Promise<{ success: boolean; reason?: string }> {
+        if (!this.leaderState) {
+            return { success: true, reason: 'already_follower' };
+        }
+
+        if (candidateBootTime <= this.bootTime) {
+            this.logger.warn(
+                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}" (candidateBootTime ${candidateBootTime} <= local ${this.bootTime})`,
+            );
+            return { success: false, reason: 'candidate_not_newer' };
+        }
+
+        this.logger.log(
+            `[LEADER-ELECTION] 🤝 Gracefully yielding leadership to newer pod "${candidatePod}". Stepping down...`,
+        );
+
+        // Suppress re-acquisition on this pod for 15s so newer pod has ample time to acquire
+        this.suppressAcquisitionUntil = Date.now() + 15_000;
+
+        // Release lease and step down to follower
+        await this.releaseLease();
+        this.setLeader(false);
+
+        return { success: true };
+    }
+
+    /**
+     * Immediately triggers an election cycle without waiting for the periodic timer
+     */
+    public async triggerElectionNow(): Promise<void> {
+        if (this.isShuttingDown) return;
+        await this.electionLoop();
     }
 }
