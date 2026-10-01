@@ -12,9 +12,6 @@ COPY . .
 RUN npm run build \
     && npm run trace \
     && find dist/node_modules/@lmdb -name '*.node' ! -name 'node.napi.glibc.node' -delete \
-    && ARCH=$([ "$(uname -m)" = aarch64 ] && echo linux-arm64 || echo linux-x64) \
-    && find dist/node_modules/nftables-napi/prebuilds -name '*.musl.node' -delete \
-    && find dist/node_modules/nftables-napi/prebuilds -mindepth 1 -maxdepth 1 -type d ! -name "$ARCH" -exec rm -rf {} + \
     && chmod +x dist/cli.js
 
 
