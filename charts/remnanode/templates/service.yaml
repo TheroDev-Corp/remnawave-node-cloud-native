@@ -30,8 +30,8 @@ spec:
     {{- include "remnanode.selectorLabels" . | nindent 4 }}
   ports:
     - name: peer-sync
-      port: {{ .Values.node.apiPort }}
-      targetPort: {{ .Values.node.apiPort }}
+      port: {{ default 3000 .Values.node.healthPort }}
+      targetPort: {{ default 3000 .Values.node.healthPort }}
       protocol: TCP
 {{- end }}
 {{- if and .Values.directUdp .Values.directUdp.enabled }}

@@ -5,6 +5,7 @@ import { HandlerModule } from '../handler/handler.module';
 import { InternalModule } from '../internal/internal.module';
 import { LeaderElectionModule } from '../leader-election/leader-election.module';
 import { XrayModule } from '../xray-core/xray.module';
+import { LeaderPromotedHandler } from './events/leader-promoted.handler';
 import { PeerSyncController } from './peer-sync.controller';
 import { PeerSyncService } from './peer-sync.service';
 
@@ -18,7 +19,7 @@ import { PeerSyncService } from './peer-sync.service';
         forwardRef(() => HandlerModule),
     ],
     controllers: [PeerSyncController],
-    providers: [PeerSyncService],
+    providers: [PeerSyncService, LeaderPromotedHandler],
     exports: [PeerSyncService],
 })
 export class PeerSyncModule {}

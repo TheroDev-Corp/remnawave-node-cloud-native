@@ -84,6 +84,29 @@ Active-нода:
 3. Получает текущий снимок конфигурации Xray, хэши inbounds и список активных пользователей.
 4. Загружает их в свой локальный Xray-core и переходит в статус горячего резерва (`Hot-Standby`).
 
+### 3.3. Требования к K8s Headless Service (`publishNotReadyAddresses`)
+
+Для обнаружения Standby-подов через DNS Headless Service **критически важно** включить `publishNotReadyAddresses: true` в манифесте Service:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: remnanode-headless
+  namespace: remnanode
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true # КРИТИЧНО: позволяет лидеру видеть IP standby-подов до прохождения ими Ready probe
+  selector:
+    app: remnanode
+  ports:
+    - name: health-internal
+      port: 3000
+      targetPort: 3000
+```
+
+Без директивы `publishNotReadyAddresses: true` CoreDNS K8s не включает в DNS NotReady поды (Standby-под намеренно возвращает 503 на `/health/ready` до промоушена в лидера).
+
 ---
 
 ## 4. Координация лидерства (K8s Lease) и Rollout Restart
