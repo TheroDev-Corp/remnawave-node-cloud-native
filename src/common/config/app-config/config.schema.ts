@@ -35,8 +35,6 @@ export const configSchema = z
         PEER_HEADLESS_SERVICE: z.string().optional(),
         TRUSTED_PROXIES: z.string().default('10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'),
         DISABLE_INSTANCE_LOCK: booleanString('false'),
-        TRAEFIK_INTEGRATION_ENABLED: booleanString('false'),
-        TRAEFIK_MIDDLEWARE_NAME: z.string().default('reality-whitelist'),
     })
 
     .superRefine((data, ctx) => {

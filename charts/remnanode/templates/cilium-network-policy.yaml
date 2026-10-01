@@ -1,0 +1,87 @@
+{{- if and .Values.ciliumNetworkPolicy .Values.ciliumNetworkPolicy.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "remnanode.fullname" . }}-policy
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "remnanode.name" . }}
+  ingress:
+  # Allow internal peer sync between replicas
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: {{ include "remnanode.name" . }}
+    toPorts:
+    - ports:
+      - port: {{ default 3000 .Values.node.healthPort | quote }}
+        protocol: TCP
+      - port: {{ default 2222 .Values.node.apiPort | quote }}
+        protocol: TCP
+  # Allow Remnawave Panel API traffic
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: remnaware-panel
+        io.kubernetes.pod.namespace: remnaware
+    toPorts:
+    - ports:
+      - port: {{ default 2222 .Values.node.apiPort | quote }}
+        protocol: TCP
+  # Inbound proxy ports
+  - fromEntities:
+    - world
+    - host
+    - remote-node
+    toPorts:
+    - ports:
+      {{- range .Values.inbounds }}
+      - port: {{ .port | quote }}
+        protocol: {{ default "TCP" .protocol | upper }}
+      {{- end }}
+  # Health checks from kubelet (host / remote-node)
+  - fromEntities:
+    - host
+    - remote-node
+    toPorts:
+    - ports:
+      - port: {{ default 3000 .Values.node.healthPort | quote }}
+        protocol: TCP
+      - port: {{ default 2222 .Values.node.apiPort | quote }}
+        protocol: TCP
+  egress:
+  # Allow internal peer sync to other replicas
+  - toEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: {{ include "remnanode.name" . }}
+    toPorts:
+    - ports:
+      - port: {{ default 3000 .Values.node.healthPort | quote }}
+        protocol: TCP
+      - port: {{ default 2222 .Values.node.apiPort | quote }}
+        protocol: TCP
+  # DNS resolution
+  - toEndpoints:
+    - matchLabels:
+        io.kubernetes.pod.namespace: kube-system
+        k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      - port: "53"
+        protocol: TCP
+  # Kubernetes API / Coordination Lease
+  - toEntities:
+    - kube-apiserver
+    - host
+    - remote-node
+  - toServices:
+    - k8sService:
+        namespace: default
+        serviceName: kubernetes
+  # Outbound proxy traffic
+  - toEntities:
+    - world
+{{- end }}

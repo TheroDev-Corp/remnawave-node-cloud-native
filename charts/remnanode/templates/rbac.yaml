@@ -13,12 +13,6 @@ metadata:
   labels:
     {{- include "remnanode.labels" . | nindent 4 }}
 rules:
-  {{- if and .Values.leaderElection.traefikMiddleware .Values.leaderElection.traefikMiddleware.enabled }}
-  - apiGroups: ["traefik.io"]
-    resources: ["middlewaretcps"]
-    resourceNames: [{{ .Values.leaderElection.traefikMiddleware.name | quote }}]
-    verbs: ["get", "update", "patch"]
-  {{- end }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     resourceNames: [{{ .Values.leaderElection.leaseName | quote }}]

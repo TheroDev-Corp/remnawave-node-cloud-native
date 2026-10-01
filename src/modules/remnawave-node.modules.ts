@@ -1,7 +1,6 @@
 import { Logger, Module, OnApplicationShutdown } from '@nestjs/common';
 
 import { IntegrationsModule } from '@integration-modules/integrations.module';
-import { TraefikModule } from '@integration-modules/traefik/traefik.module';
 
 import { PluginModule } from './_plugin/plugin.module';
 import { AsnLmdbModule } from './asn-lmdb/asn-lmdb.module';
@@ -16,7 +15,6 @@ import { XrayModule } from './xray-core/xray.module';
 @Module({
     imports: [
         IntegrationsModule,
-        TraefikModule,
         LeaderElectionModule,
         PeerSyncModule,
         HealthModule,

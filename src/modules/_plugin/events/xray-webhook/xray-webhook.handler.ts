@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
 
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 
 import { TypedConfigService } from '@common/config/app-config';
@@ -8,10 +8,9 @@ import { CidrMatcher } from '@common/utils/cidr-matcher';
 import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
 import { TorrentBlockerReportModel, XrayWebhookSchema } from '@libs/contracts/models';
 
-import { TraefikService } from '@integration-modules/traefik/traefik.service';
-
 import { NftService } from '../../services/nft.service';
 import { PluginStateService } from '../../services/plugin-state.service';
+import { UserSuspensionService } from '../../services/user-suspension.service';
 import { XrayWebhookEvent } from './xray-webhook.event';
 
 const SOURCE_REGEX = /^(?:(?:tcp|udp):)?(?:\[(.+?)\]|(.+?))(?::(\d+))?$/;
@@ -26,8 +25,8 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
     constructor(
         private readonly pluginState: PluginStateService,
         private readonly nftService: NftService,
+        private readonly userSuspensionService: UserSuspensionService,
         private readonly configService: TypedConfigService,
-        @Optional() private readonly traefikService?: TraefikService,
     ) {
         const trustedProxiesStr = this.configService.getOrThrow('TRUSTED_PROXIES');
         const cidrs = trustedProxiesStr
@@ -71,22 +70,20 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             if (isProxiedByTraefik) {
                 // Client is connected through Reverse Proxy (Traefik with PROXY protocol)
                 // Do NOT block this IP with local nftables/sockdestroy (it would drop Traefik itself!)
+                // Instead, suspend user directly in Xray Core for the specified duration
                 this.logger.warn(
-                    `[TORRENT-BLOCKER] Detected torrent from proxied connection (client: ${ip}, user: ${webhook.email}). Routing ban to Traefik/Panel.`,
+                    `[TORRENT-BLOCKER] Detected torrent from proxied connection (client: ${ip}, user: ${webhook.email}). Suspending user for ${blockDuration}s...`,
                 );
 
-                if (this.traefikService?.isEnabled) {
-                    try {
-                        await this.traefikService.banIp(ip, blockDuration);
-                        blocked = true;
-                    } catch (error) {
-                        this.logger.error(`Failed to ban IP ${ip} in Traefik: ${error}`);
-                    }
-                }
+                blocked = await this.userSuspensionService.suspendUser(
+                    webhook.email,
+                    blockDuration,
+                );
             } else {
-                // Direct connection (e.g. Hysteria 2 / TUIC UDP) -> block in Pod Network Namespace
+                // Direct connection (e.g. Hysteria 2 / TUIC UDP) -> block in Pod Network Namespace + suspend user
                 try {
                     await this.nftService.blockIp(ip, blockDuration);
+                    await this.userSuspensionService.suspendUser(webhook.email, blockDuration);
                     blocked = true;
 
                     this.logger.log(

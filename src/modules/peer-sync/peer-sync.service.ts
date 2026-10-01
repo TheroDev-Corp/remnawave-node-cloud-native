@@ -15,6 +15,7 @@ import { CommandBus } from '@nestjs/cqrs';
 import { TypedConfigService } from '@common/config/app-config';
 import { StartXrayCommand } from '@libs/contracts/commands';
 
+import { UserSuspensionService } from '../_plugin/services/user-suspension.service';
 import {
     AddUserRequestDto,
     AddUsersRequestDto,
@@ -31,7 +32,12 @@ export type TPeerReplicationAction =
     | { type: 'addUser'; body: AddUserRequestDto }
     | { type: 'addUsers'; body: AddUsersRequestDto }
     | { type: 'removeUser'; body: RemoveUserRequestDto }
-    | { type: 'removeUsers'; body: RemoveUsersRequestDto };
+    | { type: 'removeUsers'; body: RemoveUsersRequestDto }
+    | {
+          type: 'suspendUser';
+          body: { userId: string; durationSeconds: number; unbanAt: number };
+      }
+    | { type: 'restoreUser'; body: { userId: string } };
 
 @Injectable()
 export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -55,6 +61,8 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
         private readonly xrayService: XrayService,
         @Inject(forwardRef(() => HandlerService))
         private readonly handlerService: HandlerService,
+        @Inject(forwardRef(() => UserSuspensionService))
+        private readonly userSuspensionService: UserSuspensionService,
         private readonly commandBus: CommandBus,
     ) {
         this.headlessService = this.configService.get('PEER_HEADLESS_SERVICE');
@@ -209,6 +217,21 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
                 if (this.xrayService.isOnline) {
                     await this.handlerService.removeUsers(action.body);
                 }
+                break;
+            case 'suspendUser': {
+                const remainingSeconds = Math.max(
+                    1,
+                    Math.round((action.body.unbanAt - Date.now()) / 1000),
+                );
+                await this.userSuspensionService.suspendUser(action.body.userId, remainingSeconds, {
+                    replicate: false,
+                });
+                break;
+            }
+            case 'restoreUser':
+                await this.userSuspensionService.restoreUser(action.body.userId, {
+                    replicate: false,
+                });
                 break;
             default:
                 this.logger.warn(`Unknown peer sync action: ${JSON.stringify(action)}`);

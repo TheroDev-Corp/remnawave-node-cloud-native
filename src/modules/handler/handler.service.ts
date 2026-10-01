@@ -59,6 +59,8 @@ export class HandlerService implements OnModuleInit {
             const userId = requestData[0].username;
             let userIps: string[] | null = null;
 
+            this.internalService.storeUserDefinition(userId, data);
+
             for (const item of requestData) {
                 this.internalService.addXtlsConfigInbound(item.tag);
             }
@@ -207,6 +209,8 @@ export class HandlerService implements OnModuleInit {
 
             const userIps = await this.getUserIps(username);
 
+            this.internalService.removeUserDefinition(username);
+
             for (const tag of inboundTags) {
                 this.logger.debug(`Removing user: ${username} from tag: ${tag}`);
 
@@ -253,6 +257,55 @@ export class HandlerService implements OnModuleInit {
             );
 
             for (const user of users) {
+                const mappedUserDef: AddUserRequestDto = {
+                    data: user.inboundData.map((item) => {
+                        switch (item.type) {
+                            case 'trojan':
+                                return {
+                                    type: 'trojan',
+                                    tag: item.tag,
+                                    username: user.userData.userId,
+                                    password: user.userData.trojanPassword,
+                                };
+                            case 'vless':
+                                return {
+                                    type: 'vless',
+                                    tag: item.tag,
+                                    username: user.userData.userId,
+                                    uuid: user.userData.vlessUuid,
+                                    flow: item.flow,
+                                };
+                            case 'shadowsocks':
+                                return {
+                                    type: 'shadowsocks',
+                                    tag: item.tag,
+                                    username: user.userData.userId,
+                                    password: user.userData.ssPassword,
+                                    cipherType: 6 as any,
+                                    ivCheck: false,
+                                };
+                            case 'shadowsocks22':
+                                return {
+                                    type: 'shadowsocks22',
+                                    tag: item.tag,
+                                    username: user.userData.userId,
+                                    password: user.userData.ssPassword,
+                                };
+                            case 'hysteria':
+                                return {
+                                    type: 'hysteria',
+                                    tag: item.tag,
+                                    username: user.userData.userId,
+                                    password: user.userData.vlessUuid,
+                                };
+                        }
+                    }),
+                    hashData: {
+                        vlessUuid: user.userData.vlessUuid,
+                    },
+                };
+                this.internalService.storeUserDefinition(user.userData.userId, mappedUserDef);
+
                 for (const tag of this.internalService.getXtlsConfigInbounds()) {
                     await this.xtlsApi.handler.removeUser(tag, user.userData.userId);
 
@@ -382,6 +435,8 @@ export class HandlerService implements OnModuleInit {
             for (const user of data.users) {
                 const { userId, hashUuid } = user;
 
+                this.internalService.removeUserDefinition(userId);
+
                 const userIps = await this.getUserIps(userId);
 
                 for (const tag of inboundTags) {
@@ -456,7 +511,7 @@ export class HandlerService implements OnModuleInit {
         }
     }
 
-    private async getUserIps(userId: string): Promise<string[] | null> {
+    public async getUserIps(userId: string): Promise<string[] | null> {
         try {
             if (!this.capNetAdminAvailable) {
                 return null;

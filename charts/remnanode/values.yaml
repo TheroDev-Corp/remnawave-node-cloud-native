@@ -60,14 +60,14 @@ tmpfs:
 leaderElection:
   enabled: true
   leaseName: 'remnanode-leader'
-  # Optional: Traefik MiddlewareTCP to update IP whitelist on failover
-  traefikMiddleware:
-    enabled: false
-    name: 'reality-whitelist'
 
 # Cloud-native Peer Synchronization settings
 peerSync:
   enabled: true
+
+# Cilium Network Policy for cluster environments using Cilium CNI
+ciliumNetworkPolicy:
+  enabled: false
 
 # Xray core / Remnanode settings
 node:

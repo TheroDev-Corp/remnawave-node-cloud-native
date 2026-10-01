@@ -7,6 +7,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HashedSet } from '@remnawave/hashed-set';
 
 import { StartXrayCommand } from '@libs/contracts/commands';
+import { AddUserCommand } from '@libs/contracts/commands/handler';
 
 @Injectable()
 export class InternalService {
@@ -18,8 +19,25 @@ export class InternalService {
     private emptyConfigHash: null | string = null;
     private inboundsHashMap: Map<string, HashedSet> = new Map();
     private xtlsConfigInbounds: Set<string> = new Set();
+    private userDefinitions: Map<string, AddUserCommand.Request> = new Map();
 
     constructor() {}
+
+    public storeUserDefinition(username: string, data: AddUserCommand.Request): void {
+        this.userDefinitions.set(username, data);
+    }
+
+    public getUserDefinition(username: string): AddUserCommand.Request | undefined {
+        return this.userDefinitions.get(username);
+    }
+
+    public removeUserDefinition(username: string): void {
+        this.userDefinitions.delete(username);
+    }
+
+    public getAllUserDefinitions(): Map<string, AddUserCommand.Request> {
+        return this.userDefinitions;
+    }
 
     public async getXrayConfig(): Promise<Record<string, unknown>> {
         if (!this.xrayConfig) {
@@ -222,6 +240,7 @@ export class InternalService {
 
         this.inboundsHashMap.clear();
         this.xtlsConfigInbounds.clear();
+        this.userDefinitions.clear();
         this.xrayConfig = null;
         this.emptyConfigHash = null;
     }
