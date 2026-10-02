@@ -9,11 +9,18 @@ spec:
   type: {{ dig "service" "type" "ClusterIP" .Values.node }}
   selector:
     {{- include "remnanode.selectorLabels" . | nindent 4 }}
+    role: leader
   ports:
     - name: api
       port: {{ dig "service" "port" (default 2222 .Values.node.apiPort) .Values.node }}
       targetPort: {{ default 2222 .Values.node.apiPort }}
       protocol: TCP
+    {{- range .Values.inbounds }}
+    - name: {{ lower (default "tcp" .protocol) }}-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ .port }}
+      protocol: {{ default "TCP" .protocol | upper }}
+    {{- end }}
 {{- if .Values.peerSync.enabled }}
 ---
 # Headless Service for peer discovery and sync (PeerSync)

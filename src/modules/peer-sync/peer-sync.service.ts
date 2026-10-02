@@ -140,6 +140,10 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
                 );
             }
         }
+
+        // Apply role="leader" pod label ONLY when local Xray is up and ready (or on cold start waiting for panel)
+        // so that Kubernetes Service Endpoints never route client traffic to an unready pod!
+        await this.leaderElectionService.applyLeaderRoleLabel();
     }
 
     /**
@@ -392,15 +396,27 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
                         await this.leaderElectionService.triggerElectionNow();
                         return;
                     } else {
-                        this.logger.debug(
-                            `[PEER-SYNC] Leader ${peerIp} did not yield: ${data.reason}`,
+                        this.logger.warn(
+                            `[PEER-SYNC] Leader ${peerIp} did not yield: ${data.reason}. Scheduling retry in 3s...`,
                         );
+                        setTimeout(() => {
+                            this.hasRequestedYield = false;
+                            if (!this.leaderElectionService.isLeader && !this.isShuttingDown) {
+                                void this.requestLeadershipHandoff(peerIp);
+                            }
+                        }, 3000);
                     }
                 }
             } catch (error) {
                 this.logger.warn(
-                    `[PEER-SYNC] Failed to request leadership yield from ${peerIp}: ${error}`,
+                    `[PEER-SYNC] Failed to request leadership yield from ${peerIp}: ${error}. Scheduling retry in 3s...`,
                 );
+                setTimeout(() => {
+                    this.hasRequestedYield = false;
+                    if (!this.leaderElectionService.isLeader && !this.isShuttingDown) {
+                        void this.requestLeadershipHandoff(peerIp);
+                    }
+                }, 3000);
             }
         }
     }

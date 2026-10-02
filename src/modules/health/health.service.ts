@@ -106,15 +106,6 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
         });
 
         app.get('/health/ready', async (_req: Request, res: Response) => {
-            if (!this.leaderElectionService.isServingTraffic) {
-                return res.status(503).json({
-                    status: 'standby',
-                    role: 'follower',
-                    identity: this.leaderElectionService.identity,
-                    message: 'Standby replica. Client traffic routed to active leader.',
-                });
-            }
-
             let xrayUp = false;
             let xrayPid: number | null = null;
 
@@ -126,12 +117,17 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
                 // Xray may not be started yet on initial boot before panel pushes config
             }
 
-            const role = this.leaderElectionService.isDraining ? 'leader-draining' : 'leader';
+            const isLeader = this.leaderElectionService.isLeader;
+            const isDraining = this.leaderElectionService.isDraining;
+            const role = isLeader ? 'leader' : isDraining ? 'leader-draining' : 'standby';
 
+            // Return 200 OK for both leader and standby so ArgoCD and K8s see all replicas ready.
+            // Traffic is directed to leader via Service selector "role: leader".
             return res.status(200).json({
                 status: 'ok',
                 role,
-                draining: this.leaderElectionService.isDraining,
+                servingTraffic: this.leaderElectionService.isServingTraffic,
+                draining: isDraining,
                 xray: xrayUp ? 'up' : 'down',
                 pid: xrayPid,
                 identity: this.leaderElectionService.identity,

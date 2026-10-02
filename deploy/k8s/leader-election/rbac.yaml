@@ -26,6 +26,11 @@ rules:
   - apiGroups: ['coordination.k8s.io']
     resources: ['leases']
     verbs: ['create']
+
+  # 3. Pod Labels: динамическая маркировка лидера для K8s Service selector
+  - apiGroups: ['']
+    resources: ['pods']
+    verbs: ['get', 'patch']
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
