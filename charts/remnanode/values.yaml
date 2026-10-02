@@ -73,7 +73,7 @@ ciliumNetworkPolicy:
 node:
   image:
     repository: ghcr.io/therodev-corp/remnawave-node-cloud-native
-    tag: 'dev'
+    tag: latest
     pullPolicy: Always
   apiPort: 2222
   healthPort: 3000
