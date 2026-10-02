@@ -74,10 +74,34 @@ export class K8sLeaseClient {
         };
     }
 
+    public async patchPodLabels(
+        namespace: string,
+        name: string,
+        labels: Record<string, string | null>,
+    ): Promise<{ status: number; body?: string }> {
+        const path = `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`;
+        const patchBody = JSON.stringify({
+            metadata: {
+                labels,
+            },
+        });
+        const res = await this.request(
+            'PATCH',
+            path,
+            patchBody,
+            'application/strategic-merge-patch+json',
+        );
+        return {
+            status: res.statusCode,
+            body: res.body,
+        };
+    }
+
     private request(
         method: string,
         path: string,
         body?: string,
+        contentType: string = 'application/json',
     ): Promise<{ statusCode: number; body: string }> {
         return new Promise((resolve, reject) => {
             const url = new URL(path, this.baseUrl);
@@ -87,7 +111,7 @@ export class K8sLeaseClient {
             };
 
             if (body) {
-                headers['Content-Type'] = 'application/json';
+                headers['Content-Type'] = contentType;
                 headers['Content-Length'] = Buffer.byteLength(body).toString();
             }
 

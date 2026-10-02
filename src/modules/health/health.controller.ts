@@ -24,15 +24,8 @@ export class HealthController {
     @Get('ready')
     async ready(@Res() res: Response): Promise<Response> {
         const isLeader = this.leaderElectionService.isLeader;
-
-        if (!isLeader) {
-            return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
-                status: 'standby',
-                role: 'follower',
-                identity: this.leaderElectionService.identity,
-                message: 'Hot-standby replica. Client traffic routed to active leader.',
-            });
-        }
+        const isServing = this.leaderElectionService.isServingTraffic;
+        const isDraining = this.leaderElectionService.isDraining;
 
         let xrayUp = false;
         let xrayPid: number | null = null;
@@ -45,9 +38,15 @@ export class HealthController {
             // Xray may not be started yet on initial boot before panel pushes config
         }
 
+        const role = isLeader ? 'leader' : isDraining ? 'leader-draining' : 'standby';
+
+        // Both leader and standby replicas return 200 OK so that K8s and ArgoCD see all replicas as Ready (2/2).
+        // Traffic routing to leader is strictly handled by K8s Service selector (role: leader).
         return res.status(HttpStatus.OK).json({
             status: 'ok',
-            role: 'leader',
+            role,
+            servingTraffic: isServing,
+            draining: isDraining,
             xray: xrayUp ? 'up' : 'down',
             pid: xrayPid,
             identity: this.leaderElectionService.identity,

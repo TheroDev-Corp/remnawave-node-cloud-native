@@ -286,10 +286,34 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
                 this.drainTimer = null;
             }
             this.logger.log(`🏆 Pod "${this.podName}" promoted to LEADER.`);
+            void this.updatePodRoleLabel('leader');
             this.eventBus.publish(new LeaderPromotedEvent(this.podName));
         } else if (previous && !leader) {
             this.logger.warn(`Pod "${this.podName}" demoted to FOLLOWER / STANDBY.`);
+            void this.updatePodRoleLabel('standby');
             this.eventBus.publish(new LeaderDemotedEvent(this.podName));
+        }
+    }
+
+    private async updatePodRoleLabel(role: 'leader' | 'standby'): Promise<void> {
+        if (!this.podName || !this.namespace) return;
+        try {
+            const res = await this.client.patchPodLabels(this.namespace, this.podName, {
+                role,
+            });
+            if (res.status === 200) {
+                this.logger.log(
+                    `🏷️ Successfully labeled pod "${this.podName}" with role="${role}"`,
+                );
+            } else {
+                this.logger.warn(
+                    `Failed to patch pod label role="${role}" (HTTP ${res.status}): ${res.body}`,
+                );
+            }
+        } catch (error) {
+            this.logger.warn(
+                `Error patching pod label role="${role}": ${error instanceof Error ? error.message : String(error)}`,
+            );
         }
     }
 
