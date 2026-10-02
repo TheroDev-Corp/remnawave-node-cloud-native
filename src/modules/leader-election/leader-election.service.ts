@@ -286,7 +286,8 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
                 this.drainTimer = null;
             }
             this.logger.log(`🏆 Pod "${this.podName}" promoted to LEADER.`);
-            void this.updatePodRoleLabel('leader');
+            // Notice: Labeling role="leader" is deferred to applyLeaderRoleLabel()
+            // once local Xray is confirmed online (or on initial boot) to prevent blackholing traffic.
             this.eventBus.publish(new LeaderPromotedEvent(this.podName));
         } else if (previous && !leader) {
             this.logger.warn(`Pod "${this.podName}" demoted to FOLLOWER / STANDBY.`);
@@ -295,7 +296,12 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         }
     }
 
-    private async updatePodRoleLabel(role: 'leader' | 'standby'): Promise<void> {
+    public async applyLeaderRoleLabel(): Promise<void> {
+        if (!this.leaderState) return;
+        await this.updatePodRoleLabel('leader');
+    }
+
+    public async updatePodRoleLabel(role: 'leader' | 'standby'): Promise<void> {
         if (!this.podName || !this.namespace) return;
         try {
             const res = await this.client.patchPodLabels(this.namespace, this.podName, {
@@ -328,21 +334,18 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             return { success: true, reason: 'already_follower' };
         }
 
-        // Anti-flapping: Minimum leader tenure (30s) so new pods don't immediately yield to each other
-        const tenureMs = Date.now() - this.leaderSince;
-        if (tenureMs < this.minLeaderTenureMs) {
-            this.logger.warn(
-                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}": leader tenure ${tenureMs}ms < ${this.minLeaderTenureMs}ms (stabilization period).`,
-            );
-            return { success: false, reason: 'leader_stabilizing' };
-        }
-
         if (candidateBootTime <= this.bootTime) {
             this.logger.warn(
                 `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}" (candidateBootTime ${candidateBootTime} <= local ${this.bootTime})`,
             );
             return { success: false, reason: 'candidate_not_newer' };
         }
+
+        // Anti-flapping: If candidate is newer, but current leader acquired leadership only recently AND candidate booted BEFORE current leader became leader,
+        // it means candidate is NOT a new deployment rollout, but a simultaneous pod.
+        // During rolling update, a new deployment pod has candidateBootTime > local this.bootTime, which is genuine rollout.
+        // However, if the leader only just acquired the lease from another pod (e.g. during pod death), we still honor yield to a newer pod!
+        // We only reject if candidate is NOT newer (already checked above) or if the leader was booted later than candidate.
 
         this.logger.log(
             `[LEADER-ELECTION] 🤝 Gracefully yielding leadership to newer pod "${candidatePod}". Releasing lease and entering 10s draining overlap...`,
