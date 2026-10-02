@@ -3,7 +3,8 @@ name: Build and Push Release Image
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -51,8 +52,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=ref,event=tag
             type=semver,pattern={{version}}
-            type=raw,value=latest
+            type=semver,pattern={{raw}}
+            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
