@@ -1,26 +1,39 @@
 import { isIP } from 'node:net';
 
-import { Logger } from '@nestjs/common';
-import { IEventHandler, EventsHandler } from '@nestjs/cqrs';
+import { Injectable, Logger } from '@nestjs/common';
+import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 
+import { TypedConfigService } from '@common/config/app-config';
+import { CidrMatcher } from '@common/utils/cidr-matcher';
 import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
 import { TorrentBlockerReportModel, XrayWebhookSchema } from '@libs/contracts/models';
 
-import { NftService } from '../../services/nft.service';
 import { PluginStateService } from '../../services/plugin-state.service';
+import { UserSuspensionService } from '../../services/user-suspension.service';
 import { XrayWebhookEvent } from './xray-webhook.event';
 
 const SOURCE_REGEX = /^(?:(?:tcp|udp):)?(?:\[(.+?)\]|(.+?))(?::(\d+))?$/;
 const WEBHOOK_TIMEOUT_MS = 5_000;
 
+@Injectable()
 @EventsHandler(XrayWebhookEvent)
 export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
     public readonly logger = new Logger(XrayWebhookHandler.name);
+    private readonly trustedProxiesMatcher: CidrMatcher;
 
     constructor(
         private readonly pluginState: PluginStateService,
-        private readonly nftService: NftService,
-    ) {}
+        private readonly userSuspensionService: UserSuspensionService,
+        private readonly configService: TypedConfigService,
+    ) {
+        const trustedProxiesStr = this.configService.getOrThrow('TRUSTED_PROXIES');
+        const cidrs = trustedProxiesStr
+            .split(',')
+            .map((c) => c.trim())
+            .filter(Boolean);
+        this.trustedProxiesMatcher = new CidrMatcher(cidrs);
+    }
+
     async handle(event: XrayWebhookEvent) {
         const ct = getTime();
         try {
@@ -35,7 +48,6 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             this.logger.debug(JSON.stringify(parsed.data, null, 2));
 
             const webhook = parsed.data;
-
             const ip = this.extractIp(webhook.source);
 
             if (!ip || !webhook.email) return;
@@ -49,19 +61,14 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             }
 
             const blockDuration = this.pluginState.torrentBlocker.duration!;
+            this.logger.warn(
+                `[TORRENT-BLOCKER] Detected torrent (client: ${ip}, user: ${webhook.email}). Suspending user for ${blockDuration}s...`,
+            );
 
-            let blocked = false;
-
-            try {
-                await this.nftService.blockIp(ip, blockDuration);
-                blocked = true;
-
-                this.logger.log(
-                    `[TORRENT-BLOCKER] IP: ${ip}, user: ${webhook.email}, blocked: ${blocked}, duration: ${blockDuration}s`,
-                );
-            } catch (error) {
-                this.logger.error(`Failed to block IP ${ip}: ${error}`);
-            }
+            const blocked = await this.userSuspensionService.suspendUser(
+                webhook.email,
+                blockDuration,
+            );
 
             const report: TorrentBlockerReportModel = {
                 actionReport: {

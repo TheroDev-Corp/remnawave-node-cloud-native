@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remnanode
+  namespace: remnanode
+  labels:
+    app: remnanode
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: remnanode
+  template:
+    metadata:
+      labels:
+        app: remnanode
+    spec:
+      serviceAccountName: remnanode-sa
+      # hostNetwork намеренно FALSE для изоляции и запуска двух реплик без коллизий портов
+      hostNetwork: false
+      containers:
+        - name: remnanode
+          image: remnawave/node:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+              drop:
+                - ALL
+            privileged: false
+            runAsNonRoot: false
+          env:
+            - name: NODE_PORT
+              value: '2222'
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_LEADER_ELECTION_ENABLED
+              value: 'true'
+            - name: K8S_LEASE_NAME
+              value: 'remnanode-leader'
+            - name: PEER_HEADLESS_SERVICE
+              value: 'remnanode-headless'
+            - name: TRUSTED_PROXIES
+              value: '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'
+            - name: DISABLE_INSTANCE_LOCK
+              value: 'true'
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: remnanode-secret
+                  key: secret-key
+          ports:
+            - name: api
+              containerPort: 2222
+            - name: health
+              containerPort: 3000
+            - name: xray-reality
+              containerPort: 443
+              protocol: TCP
+            - name: xray-hysteria
+              containerPort: 443
+              protocol: UDP
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3000
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+# Headless Service для обнаружения реплик и межподовой синхронизации (PeerSync)
+apiVersion: v1
+kind: Service
+metadata:
+  name: remnanode-headless
+  namespace: remnanode
+spec:
+  clusterIP: None
+  selector:
+    app: remnanode
+  ports:
+    - name: api
+      port: 2222
+      targetPort: 2222
+---
+# Сервис для вызовов Панели управления (mTLS / API на активную ноду)
+apiVersion: v1
+kind: Service
+metadata:
+  name: remnanode-api
+  namespace: remnanode
+spec:
+  type: ClusterIP
+  selector:
+    app: remnanode
+  ports:
+    - name: api
+      port: 2222
+      targetPort: 2222
+---
+# Сервис для маршрутизации клиентского TCP трафика ТОЛЬКО на Active-реплику (по readiness probe)
+apiVersion: v1
+kind: Service
+metadata:
+  name: remnanode-active-service
+  namespace: remnanode
+spec:
+  type: ClusterIP
+  selector:
+    app: remnanode
+  ports:
+    - name: xray-reality
+      port: 443
+      targetPort: 443
+      protocol: TCP
+---
+# Сервис для прямого UDP трафика (Hysteria 2 / TUIC) с сохранением реального IP клиента
+apiVersion: v1
+kind: Service
+metadata:
+  name: remnanode-direct-udp
+  namespace: remnanode
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: remnanode
+  ports:
+    - name: xray-hysteria
+      port: 443
+      targetPort: 443
+      protocol: UDP

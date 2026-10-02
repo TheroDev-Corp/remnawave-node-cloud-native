@@ -1,0 +1,28 @@
+apiVersion: traefik.io/v1alpha1
+kind: MiddlewareTCP
+metadata:
+  name: reality-whitelist
+  namespace: remnanode
+spec:
+  ipAllowList:
+    sourceRange:
+      - 0.0.0.0/0
+      # Список доверенных адресов / динамический бан-лист Traefik
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: remnanode-reality-tcp
+  namespace: remnanode
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: HostSNI(`*`)
+      middlewares:
+        - name: reality-whitelist
+      services:
+        - name: remnanode-active-service
+          port: 443
+          proxyProtocol:
+            version: 2

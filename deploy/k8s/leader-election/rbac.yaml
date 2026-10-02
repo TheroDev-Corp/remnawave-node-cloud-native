@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: remnanode-sa
+  namespace: remnanode
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: remnanode-role
+  namespace: remnanode
+rules:
+  # 1. Traefik MiddlewareTCP: доступ ТОЛЬКО к конкретной миддлвари по имени (Principle of Least Privilege)
+  - apiGroups: ['traefik.io']
+    resources: ['middlewaretcps']
+    resourceNames: ['reality-whitelist']
+    verbs: ['get', 'update', 'patch']
+
+  # 2. K8s Lease: управление ТОЛЬКО своим объектом лидерства
+  - apiGroups: ['coordination.k8s.io']
+    resources: ['leases']
+    resourceNames: ['remnanode-leader']
+    verbs: ['get', 'update', 'patch', 'delete']
+
+  # Создание Lease требует права create на уровне коллекции (K8s не поддерживает resourceNames для create)
+  - apiGroups: ['coordination.k8s.io']
+    resources: ['leases']
+    verbs: ['create']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: remnanode-rolebinding
+  namespace: remnanode
+subjects:
+  - kind: ServiceAccount
+    name: remnanode-sa
+    namespace: remnanode
+roleRef:
+  kind: Role
+  name: remnanode-role
+  apiGroup: rbac.authorization.k8s.io

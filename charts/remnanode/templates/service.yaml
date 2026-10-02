@@ -1,0 +1,58 @@
+# Panel API Service (API call routing directly or via mTLS)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "remnanode.fullname" . }}
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  type: {{ dig "service" "type" "ClusterIP" .Values.node }}
+  selector:
+    {{- include "remnanode.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ dig "service" "port" (default 2222 .Values.node.apiPort) .Values.node }}
+      targetPort: {{ default 2222 .Values.node.apiPort }}
+      protocol: TCP
+{{- if .Values.peerSync.enabled }}
+---
+# Headless Service for peer discovery and sync (PeerSync)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "remnanode.fullname" . }}-headless
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "remnanode.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: peer-sync
+      port: {{ default 3000 .Values.node.healthPort }}
+      targetPort: {{ default 3000 .Values.node.healthPort }}
+      protocol: TCP
+{{- end }}
+{{- if and .Values.directUdp .Values.directUdp.enabled }}
+---
+# Direct UDP Service (Hysteria 2 / TUIC) with real client IP retention
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "remnanode.fullname" . }}-udp
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  type: {{ default "LoadBalancer" .Values.directUdp.serviceType }}
+  externalTrafficPolicy: {{ default "Local" .Values.directUdp.externalTrafficPolicy }}
+  selector:
+    {{- include "remnanode.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- range .Values.directUdp.ports }}
+    - port: {{ .port }}
+      name: {{ default (printf "udp-%d" (int .port)) .name }}
+      targetPort: {{ default .port .targetPort }}
+      protocol: UDP
+    {{- end }}
+{{- end }}

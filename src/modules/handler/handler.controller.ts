@@ -5,6 +5,7 @@ import { JwtDefaultGuard } from '@common/guards/jwt-guards';
 import { errorHandler } from '@common/helpers';
 import { HANDLER_CONTROLLER, HANDLER_ROUTES } from '@libs/contracts/api/controllers/handler';
 
+import { PeerSyncService } from '../peer-sync/peer-sync.service';
 import {
     AddUsersRequestDto,
     AddUsersResponseDto,
@@ -24,11 +25,15 @@ import { HandlerService } from './handler.service';
 @UseGuards(JwtDefaultGuard)
 @Controller(HANDLER_CONTROLLER)
 export class HandlerController {
-    constructor(private readonly handlerService: HandlerService) {}
+    constructor(
+        private readonly handlerService: HandlerService,
+        private readonly peerSyncService: PeerSyncService,
+    ) {}
 
     @Post(HANDLER_ROUTES.ADD_USER)
     public async addUser(@Body() body: AddUserRequestDto): Promise<AddUserResponseDto> {
         const response = await this.handlerService.addUser(body);
+        void this.peerSyncService.replicateToPeers({ type: 'addUser', body });
         const data = errorHandler(response);
 
         return {
@@ -39,6 +44,7 @@ export class HandlerController {
     @Post(HANDLER_ROUTES.REMOVE_USER)
     public async removeUser(@Body() body: RemoveUserRequestDto): Promise<RemoveUserResponseDto> {
         const response = await this.handlerService.removeUser(body);
+        void this.peerSyncService.replicateToPeers({ type: 'removeUser', body });
         const data = errorHandler(response);
 
         return {
@@ -49,6 +55,7 @@ export class HandlerController {
     @Post(HANDLER_ROUTES.ADD_USERS)
     public async addUsers(@Body() body: AddUsersRequestDto): Promise<AddUsersResponseDto> {
         const response = await this.handlerService.addUsers(body);
+        void this.peerSyncService.replicateToPeers({ type: 'addUsers', body });
         const data = errorHandler(response);
 
         return {
@@ -59,6 +66,7 @@ export class HandlerController {
     @Post(HANDLER_ROUTES.REMOVE_USERS)
     public async removeUsers(@Body() body: RemoveUsersRequestDto): Promise<RemoveUsersResponseDto> {
         const response = await this.handlerService.removeUsers(body);
+        void this.peerSyncService.replicateToPeers({ type: 'removeUsers', body });
         const data = errorHandler(response);
 
         return {

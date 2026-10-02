@@ -1,8 +1,8 @@
-import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 import { Logger } from '@nestjs/common';
+import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 
-import { GetInterfaceStatsQuery } from './get-interface-stats.query';
 import { NetworkStatsService } from '../../network-stats.service';
+import { GetInterfaceStatsQuery } from './get-interface-stats.query';
 
 @QueryHandler(GetInterfaceStatsQuery)
 export class GetInterfaceStatsHandler implements IQueryHandler<GetInterfaceStatsQuery> {

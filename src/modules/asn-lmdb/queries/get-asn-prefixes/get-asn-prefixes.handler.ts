@@ -1,8 +1,8 @@
-import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 import { Logger } from '@nestjs/common';
+import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 
-import { GetAsnPrefixesQuery } from './get-asn-prefixes.query';
 import { AsnLmdbService } from '../../asn-lmdb.service';
+import { GetAsnPrefixesQuery } from './get-asn-prefixes.query';
 
 @QueryHandler(GetAsnPrefixesQuery)
 export class GetAsnPrefixesHandler implements IQueryHandler<GetAsnPrefixesQuery> {

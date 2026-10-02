@@ -1,5 +1,3 @@
-import { hasCapNetAdmin } from 'sockdestroy';
-
 import { XRAY_INTERNAL_FULL_WEBHOOK_PATH } from '@libs/contracts/constants';
 import {
     XRAY_API_INBOUND_MODEL,
@@ -42,7 +40,6 @@ export const generateApiConfig = (args: IGenerateApiConfigParams): Record<string
     const { config, torrentBlockerState, internal } = args;
 
     const policyConfig = config.policy as undefined | IPolicyConfig;
-    const hasCapNetAdminResult = hasCapNetAdmin();
 
     const builtPolicy: IPolicyConfig = {
         levels: {
@@ -50,7 +47,7 @@ export const generateApiConfig = (args: IGenerateApiConfigParams): Record<string
                 ...policyConfig?.levels?.['0'],
                 statsUserUplink: XRAY_DEFAULT_POLICY_MODEL.policy.levels['0'].statsUserUplink,
                 statsUserDownlink: XRAY_DEFAULT_POLICY_MODEL.policy.levels['0'].statsUserDownlink,
-                statsUserOnline: hasCapNetAdminResult,
+                statsUserOnline: true,
             },
         },
         system: XRAY_DEFAULT_POLICY_MODEL.policy.system,

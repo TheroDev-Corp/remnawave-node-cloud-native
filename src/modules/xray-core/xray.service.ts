@@ -98,6 +98,10 @@ export class XrayService implements OnApplicationBootstrap {
         this.isXrayOnline = false;
     }
 
+    public get isOnline(): boolean {
+        return this.isXrayOnline;
+    }
+
     public async startXray(
         body: StartXrayCommand.Request,
         ip: string,
@@ -237,6 +241,7 @@ export class XrayService implements OnApplicationBootstrap {
             }
 
             this.isXrayOnline = true;
+            this.internalService.setLastStartXrayRequest(body);
 
             await this.refreshXrayVersion();
 

@@ -1,6 +1,6 @@
 {
   "name": "@remnawave/node",
-  "version": "3.4.1",
+  "version": "3.4.1-HA",
   "private": false,
   "description": "Remnawave Node",
   "homepage": "https://github.com/remnawave",
@@ -54,7 +54,6 @@
     "morgan": "^1.11.0",
     "nest-winston": "^1.10.2",
     "nestjs-zod": "5.5.0",
-    "nftables-napi": "0.7.1",
     "nice-grpc": "^2.1.17",
     "node-object-hash": "^3.1.1",
     "object-hash": "^3.0.0",
@@ -66,7 +65,6 @@
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
     "semver": "^7.8.5",
-    "sockdestroy": "2.0.1",
     "winston": "^3.19.0",
     "zod": "4.5.4"
   },

@@ -1,8 +1,8 @@
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { Logger } from '@nestjs/common';
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 
-import { ResetPluginsCommand } from './reset-plugins.command';
 import { PluginService } from '../../plugin.service';
+import { ResetPluginsCommand } from './reset-plugins.command';
 
 @CommandHandler(ResetPluginsCommand)
 export class ResetPluginsHandler implements ICommandHandler<ResetPluginsCommand> {

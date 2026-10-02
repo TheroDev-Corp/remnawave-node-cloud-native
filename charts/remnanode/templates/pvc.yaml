@@ -1,0 +1,17 @@
+{{- if .Values.geodata.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "remnanode.fullname" . }}-geodata
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.geodata.storageClassName }}
+  storageClassName: {{ .Values.geodata.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.geodata.size | default "512Mi" }}
+{{- end }}
