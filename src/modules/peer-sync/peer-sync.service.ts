@@ -140,10 +140,6 @@ export class PeerSyncService implements OnApplicationBootstrap, OnApplicationShu
                 );
             }
         }
-
-        // Apply role="leader" pod label ONLY when local Xray is up and ready (or on cold start waiting for panel)
-        // so that Kubernetes Service Endpoints never route client traffic to an unready pod!
-        await this.leaderElectionService.applyLeaderRoleLabel();
     }
 
     /**

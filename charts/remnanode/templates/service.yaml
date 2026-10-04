@@ -1,12 +1,12 @@
-# Panel API Service (API call routing directly or via mTLS)
+# 1. Panel API Service (Exposes ONLY port 2222 for Panel mTLS connection via Tailscale / LoadBalancer)
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "remnanode.fullname" . }}
+  name: {{ include "remnanode.fullname" . }}-api
   labels:
     {{- include "remnanode.labels" . | nindent 4 }}
 spec:
-  type: {{ dig "service" "type" "ClusterIP" .Values.node }}
+  type: {{ dig "service" "type" "LoadBalancer" .Values.node }}
   selector:
     {{- include "remnanode.selectorLabels" . | nindent 4 }}
     role: leader
@@ -15,11 +15,31 @@ spec:
       port: {{ dig "service" "port" (default 2222 .Values.node.apiPort) .Values.node }}
       targetPort: {{ default 2222 .Values.node.apiPort }}
       protocol: TCP
+---
+# 2. Inbound Internal Service (Always ClusterIP - used by Traefik IngressRoute / IngressRouteTCP for Reality/Trojan/WS)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "remnanode.fullname" . }}
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "remnanode.selectorLabels" . | nindent 4 }}
+    role: leader
+  ports:
+    - name: api-internal
+      port: {{ default 2222 .Values.node.apiPort }}
+      targetPort: {{ default 2222 .Values.node.apiPort }}
+      protocol: TCP
     {{- range .Values.inbounds }}
+    {{- if ne .mode "direct" }}
     - name: {{ lower (default "tcp" .protocol) }}-{{ .port }}
       port: {{ .port }}
       targetPort: {{ .port }}
       protocol: {{ default "TCP" .protocol | upper }}
+    {{- end }}
     {{- end }}
 {{- if .Values.peerSync.enabled }}
 ---

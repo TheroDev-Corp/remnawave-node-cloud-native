@@ -286,19 +286,13 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
                 this.drainTimer = null;
             }
             this.logger.log(`🏆 Pod "${this.podName}" promoted to LEADER.`);
-            // Notice: Labeling role="leader" is deferred to applyLeaderRoleLabel()
-            // once local Xray is confirmed online (or on initial boot) to prevent blackholing traffic.
+            void this.updatePodRoleLabel('leader');
             this.eventBus.publish(new LeaderPromotedEvent(this.podName));
         } else if (previous && !leader) {
             this.logger.warn(`Pod "${this.podName}" demoted to FOLLOWER / STANDBY.`);
             void this.updatePodRoleLabel('standby');
             this.eventBus.publish(new LeaderDemotedEvent(this.podName));
         }
-    }
-
-    public async applyLeaderRoleLabel(): Promise<void> {
-        if (!this.leaderState) return;
-        await this.updatePodRoleLabel('leader');
     }
 
     public async updatePodRoleLabel(role: 'leader' | 'standby'): Promise<void> {
