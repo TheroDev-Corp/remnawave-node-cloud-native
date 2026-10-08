@@ -35,10 +35,28 @@ spec:
       protocol: TCP
     {{- range .Values.inbounds }}
     {{- if ne .mode "direct" }}
-    - name: {{ lower (default "tcp" .protocol) }}-{{ .port }}
+    {{- $proto := lower (default "tcp" .protocol) }}
+    {{- $target := default .port .targetPort }}
+    {{- if or (eq $proto "both") (eq $proto "tcp/udp") (eq $proto "udp/tcp") }}
+    - name: tcp-{{ .port }}
       port: {{ .port }}
-      targetPort: {{ .port }}
-      protocol: {{ default "TCP" .protocol | upper }}
+      targetPort: {{ $target }}
+      protocol: TCP
+    - name: udp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ $target }}
+      protocol: UDP
+    {{- else if eq $proto "udp" }}
+    - name: udp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ $target }}
+      protocol: UDP
+    {{- else }}
+    - name: tcp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ $target }}
+      protocol: TCP
+    {{- end }}
     {{- end }}
     {{- end }}
 {{- if .Values.peerSync.enabled }}
@@ -60,26 +78,4 @@ spec:
       port: {{ default 3000 .Values.node.healthPort }}
       targetPort: {{ default 3000 .Values.node.healthPort }}
       protocol: TCP
-{{- end }}
-{{- if and .Values.directUdp .Values.directUdp.enabled }}
----
-# Direct UDP Service (Hysteria 2 / TUIC) with real client IP retention
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "remnanode.fullname" . }}-udp
-  labels:
-    {{- include "remnanode.labels" . | nindent 4 }}
-spec:
-  type: {{ default "LoadBalancer" .Values.directUdp.serviceType }}
-  externalTrafficPolicy: {{ default "Local" .Values.directUdp.externalTrafficPolicy }}
-  selector:
-    {{- include "remnanode.selectorLabels" . | nindent 4 }}
-  ports:
-    {{- range .Values.directUdp.ports }}
-    - port: {{ .port }}
-      name: {{ default (printf "udp-%d" (int .port)) .name }}
-      targetPort: {{ default .port .targetPort }}
-      protocol: UDP
-    {{- end }}
 {{- end }}

@@ -1,0 +1,59 @@
+{{- $hasDirect := false }}
+{{- range .Values.inbounds }}
+  {{- if eq .mode "direct" }}
+    {{- $hasDirect = true }}
+  {{- end }}
+{{- end }}
+{{- $directEnabled := true }}
+{{- if hasKey .Values "direct" }}
+  {{- if hasKey .Values.direct "enabled" }}
+    {{- $directEnabled = .Values.direct.enabled }}
+  {{- end }}
+{{- end }}
+{{- if and $hasDirect $directEnabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "remnanode.fullname" . }}-direct
+  labels:
+    {{- include "remnanode.labels" . | nindent 4 }}
+  {{- if and .Values.direct .Values.direct.annotations }}
+  annotations:
+    {{- toYaml .Values.direct.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ default "LoadBalancer" (and .Values.direct .Values.direct.serviceType) }}
+  externalTrafficPolicy: {{ default "Local" (and .Values.direct .Values.direct.externalTrafficPolicy) }}
+  {{- if and .Values.direct .Values.direct.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.direct.loadBalancerIP }}
+  {{- end }}
+  selector:
+    {{- include "remnanode.selectorLabels" . | nindent 4 }}
+    role: leader
+  ports:
+    {{- range .Values.inbounds }}
+    {{- if eq .mode "direct" }}
+    {{- $proto := lower (default "tcp" .protocol) }}
+    {{- if or (eq $proto "both") (eq $proto "tcp/udp") (eq $proto "udp/tcp") }}
+    - name: tcp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ default .port .targetPort }}
+      protocol: TCP
+    - name: udp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ default .port .targetPort }}
+      protocol: UDP
+    {{- else if eq $proto "udp" }}
+    - name: udp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ default .port .targetPort }}
+      protocol: UDP
+    {{- else }}
+    - name: tcp-{{ .port }}
+      port: {{ .port }}
+      targetPort: {{ default .port .targetPort }}
+      protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}

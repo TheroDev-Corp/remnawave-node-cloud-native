@@ -137,13 +137,28 @@ ingress:
     secretName: ''
 
 # Configuration of ports and routing modes
-# Supported modes: ingress-sni, ingress-path, ingress-xhttp, ingress-grpc, ingress-udp, direct
-# Protocol: TCP (default) or UDP (required for Hysteria)
+# Supported modes:
+#   - ingress-sni:  Traefik IngressRouteTCP (SNI passthrough, Reality/Trojan)
+#   - ingress-path: Traefik IngressRoute (WebSocket, HTTP path)
+#   - ingress-xhttp: Traefik IngressRoute (XHTTP path)
+#   - ingress-grpc: Traefik IngressRoute (gRPC / h2c)
+#   - direct:       Direct LoadBalancer Service (svclb-remnanode-direct) to active leader pod
+# Supported protocols: tcp (default), udp, both (or tcp/udp)
+#
+# Examples:
+#   - name: hysteria2
+#     port: 8443
+#     protocol: udp
+#     mode: direct
+#   - name: shadowsocks
+#     port: 2053
+#     protocol: both
+#     mode: direct
+#   - name: trojan-reality
+#     port: 10001
+#     mode: ingress-sni
+#     sni:
+#       - "security.ubuntu.com"
 inbounds: []
 
-# Direct UDP service configuration (e.g., for Hysteria 2 / TUIC)
-directUdp:
-  enabled: false
-  serviceType: LoadBalancer
-  externalTrafficPolicy: Local
-  ports: []
+

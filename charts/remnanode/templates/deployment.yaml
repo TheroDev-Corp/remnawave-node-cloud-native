@@ -106,12 +106,35 @@ spec:
               hostPort: {{ .Values.node.apiPort }}
               {{- end }}
             {{- range .Values.inbounds }}
+            {{- $proto := lower (default "tcp" .protocol) }}
+            {{- if or (eq $proto "both") (eq $proto "tcp/udp") (eq $proto "udp/tcp") }}
             - containerPort: {{ .port }}
-              name: {{ lower (default "tcp" .protocol) }}-{{ .port }}
-              protocol: {{ default "TCP" .protocol | upper }}
+              name: tcp-{{ .port }}
+              protocol: TCP
               {{- if and $.Values.node.hostNetwork (eq .mode "direct") }}
               hostPort: {{ .port }}
               {{- end }}
+            - containerPort: {{ .port }}
+              name: udp-{{ .port }}
+              protocol: UDP
+              {{- if and $.Values.node.hostNetwork (eq .mode "direct") }}
+              hostPort: {{ .port }}
+              {{- end }}
+            {{- else if eq $proto "udp" }}
+            - containerPort: {{ .port }}
+              name: udp-{{ .port }}
+              protocol: UDP
+              {{- if and $.Values.node.hostNetwork (eq .mode "direct") }}
+              hostPort: {{ .port }}
+              {{- end }}
+            {{- else }}
+            - containerPort: {{ .port }}
+              name: tcp-{{ .port }}
+              protocol: TCP
+              {{- if and $.Values.node.hostNetwork (eq .mode "direct") }}
+              hostPort: {{ .port }}
+              {{- end }}
+            {{- end }}
             {{- end }}
           {{- if and .Values.node.probes (and .Values.node.probes.liveness .Values.node.probes.liveness.enabled) }}
           livenessProbe:

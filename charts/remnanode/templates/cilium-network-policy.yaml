@@ -37,8 +37,19 @@ spec:
     toPorts:
     - ports:
       {{- range .Values.inbounds }}
+      {{- $proto := lower (default "tcp" .protocol) }}
+      {{- if or (eq $proto "both") (eq $proto "tcp/udp") (eq $proto "udp/tcp") }}
       - port: {{ .port | quote }}
-        protocol: {{ default "TCP" .protocol | upper }}
+        protocol: TCP
+      - port: {{ .port | quote }}
+        protocol: UDP
+      {{- else if eq $proto "udp" }}
+      - port: {{ .port | quote }}
+        protocol: UDP
+      {{- else }}
+      - port: {{ .port | quote }}
+        protocol: TCP
+      {{- end }}
       {{- end }}
   # Health checks from kubelet (host / remote-node)
   - fromEntities:
