@@ -161,4 +161,11 @@ ingress:
 #       - "security.ubuntu.com"
 inbounds: []
 
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+
 
