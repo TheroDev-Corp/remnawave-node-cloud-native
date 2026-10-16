@@ -12,6 +12,7 @@ metadata:
   {{- end }}
 spec:
   type: {{ dig "service" "type" "LoadBalancer" .Values.node }}
+  externalTrafficPolicy: {{ dig "service" "externalTrafficPolicy" "Local" .Values.node }}
   selector:
     {{- include "remnanode.selectorLabels" . | nindent 4 }}
     role: leader
