@@ -5,6 +5,11 @@ metadata:
   name: {{ include "remnanode.fullname" . }}-api
   labels:
     {{- include "remnanode.labels" . | nindent 4 }}
+  {{- $annotations := or (and .Values.node .Values.node.service .Values.node.service.annotations) (and .Values.node .Values.node.annotations) }}
+  {{- if $annotations }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ dig "service" "type" "LoadBalancer" .Values.node }}
   selector:
