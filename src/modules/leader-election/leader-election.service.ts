@@ -42,6 +42,8 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     private suppressAcquisitionUntil = 0;
     private leaderState = false;
+    private hasEverBeenLeader = false;
+    private readonly yieldedToCandidates = new Set<string>();
     private appliedRoleLabel: 'leader' | 'standby' | null = null;
     private currentResourceVersion: string | null = null;
     private loopTimer: NodeJS.Timeout | null = null;
@@ -77,6 +79,10 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     public get isLeader(): boolean {
         return this.leaderState;
+    }
+
+    public get hasBeenLeader(): boolean {
+        return this.hasEverBeenLeader;
     }
 
     public get identity(): string {
@@ -392,6 +398,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         this.leaderState = leader;
 
         if (!previous && leader) {
+            this.hasEverBeenLeader = true;
             this.leaderSince = Date.now();
             this.isDrainingState = false;
             if (this.drainTimer) {
@@ -468,6 +475,15 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             );
             return { success: false, reason: 'candidate_not_newer', retryable: false };
         }
+
+        if (this.yieldedToCandidates.has(candidatePod)) {
+            this.logger.warn(
+                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}": already yielded to this pod once (likely recovering after local Xray crash).`,
+            );
+            return { success: false, reason: 'already_yielded_to_candidate', retryable: false };
+        }
+
+        this.yieldedToCandidates.add(candidatePod);
 
         // Anti-flapping: If candidate is newer, but current leader acquired leadership only recently AND candidate booted BEFORE current leader became leader,
         // it means candidate is NOT a new deployment rollout, but a simultaneous pod.

@@ -240,8 +240,13 @@ export class PeerSyncService
         try {
             this.logger.log('[PEER-SYNC] Starting/recovering local Xray from stored config...');
             await this.xrayService.startXray(request, '127.0.0.1');
-            if (await this.xrayService.isXrayReady()) {
-                await this.onLocalXrayBecameReady();
+            if (
+                (await this.xrayService.isXrayReady()) &&
+                !this.isShuttingDown &&
+                !this.leaderElectionService.isLeader
+            ) {
+                // Only check if lease is currently vacant; do not request yield after an in-place crash recovery
+                await this.leaderElectionService.triggerElectionNow();
             }
         } catch (error) {
             this.logger.error(`[PEER-SYNC] Failed to recover local Xray: ${error}`);
@@ -577,7 +582,12 @@ export class PeerSyncService
     public async requestLeadershipHandoff(targetPeerIp?: string, attempt = 1): Promise<void> {
         const maxAttempts = 3;
 
-        if (this.hasRequestedYield || this.leaderElectionService.isLeader || this.isShuttingDown) {
+        if (
+            this.hasRequestedYield ||
+            this.leaderElectionService.isLeader ||
+            this.leaderElectionService.hasBeenLeader ||
+            this.isShuttingDown
+        ) {
             return;
         }
 
@@ -648,7 +658,8 @@ export class PeerSyncService
                     if (
                         data.retryable === false ||
                         data.reason === 'candidate_not_newer' ||
-                        data.reason === 'candidate_restarted'
+                        data.reason === 'candidate_restarted' ||
+                        data.reason === 'already_yielded_to_candidate'
                     ) {
                         this.logger.log(
                             `[PEER-SYNC] Leader ${peerIp} rejected yield permanently (${data.reason}). Remaining in hot-standby mode.`,
