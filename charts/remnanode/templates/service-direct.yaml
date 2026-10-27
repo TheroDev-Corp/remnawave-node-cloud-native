@@ -17,6 +17,13 @@ metadata:
   name: {{ include "remnanode.fullname" . }}-direct
   labels:
     {{- include "remnanode.labels" . | nindent 4 }}
+    {{- $lbPool := or (and .Values.direct .Values.direct.lbPool) (dig "service" "lbPool" "" .Values.node) (index (.Values.nodeSelector | default dict) "kubernetes.io/hostname") }}
+    {{- if $lbPool }}
+    svccontroller.k3s.cattle.io/lbpool: {{ $lbPool | quote }}
+    {{- end }}
+    {{- if and .Values.direct .Values.direct.labels }}
+    {{- toYaml .Values.direct.labels | nindent 4 }}
+    {{- end }}
   {{- if and .Values.direct .Values.direct.annotations }}
   annotations:
     {{- toYaml .Values.direct.annotations | nindent 4 }}

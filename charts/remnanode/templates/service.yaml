@@ -5,6 +5,13 @@ metadata:
   name: {{ include "remnanode.fullname" . }}-api
   labels:
     {{- include "remnanode.labels" . | nindent 4 }}
+    {{- $lbPool := or (dig "service" "lbPool" "" .Values.node) (index (.Values.nodeSelector | default dict) "kubernetes.io/hostname") }}
+    {{- if $lbPool }}
+    svccontroller.k3s.cattle.io/lbpool: {{ $lbPool | quote }}
+    {{- end }}
+    {{- with (dig "service" "labels" dict .Values.node) }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- $annotations := or (and .Values.node .Values.node.service .Values.node.service.annotations) (and .Values.node .Values.node.annotations) }}
   {{- if $annotations }}
   annotations:

@@ -80,6 +80,10 @@ node:
   service:
     type: ClusterIP
     port: 2222
+    # Optional K3s ServiceLB pool name (defaults to nodeSelector["kubernetes.io/hostname"] if set)
+    lbPool: ''
+    labels: {}
+    annotations: {}
   resources:
     requests:
       cpu: '100m'
