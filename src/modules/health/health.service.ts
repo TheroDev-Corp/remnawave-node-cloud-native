@@ -145,10 +145,13 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
             const isDraining = this.leaderElectionService.isDraining;
             const role = isLeader ? 'leader' : isDraining ? 'leader-draining' : 'standby';
 
-            // Return 200 OK for both leader and standby so ArgoCD and K8s see all replicas ready.
+            // Leader (or draining leader) is always Ready so the panel can push the initial config.
+            // Standby is Ready only once its Xray is up (synced from the leader), so a rolling update
+            // waits for a real hot standby before terminating the old leader.
             // Traffic is directed to leader via Service selector "role: leader".
-            return res.status(200).json({
-                status: 'ok',
+            const ready = isLeader || isDraining || xrayUp;
+            return res.status(ready ? 200 : 503).json({
+                status: ready ? 'ok' : 'standby-xray-not-ready',
                 role,
                 servingTraffic: this.leaderElectionService.isServingTraffic,
                 draining: isDraining,

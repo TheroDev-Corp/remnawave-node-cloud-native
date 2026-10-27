@@ -76,6 +76,58 @@ describe('HealthController Probes', () => {
         expect(responseBody.status).toBe('ok');
     });
 
+    it('should return 503 for Readiness probe when node is Standby and Xray is down', async () => {
+        const mockLeaderElection = {
+            isLeader: false,
+            isServingTraffic: false,
+            isDraining: false,
+            identity: 'remnanode-pod-2',
+        };
+        const mockXrayProcess = {
+            getStatus: async () => ({ up: false, pid: null, raw: 'down' }),
+        };
+
+        const controller = new HealthController(mockLeaderElection as any, mockXrayProcess as any);
+
+        let statusCode = 0;
+        const res: any = {
+            status: (code: number) => {
+                statusCode = code;
+                return { json: () => undefined };
+            },
+        };
+
+        await controller.ready(res);
+
+        expect(statusCode).toBe(503);
+    });
+
+    it('should return 200 OK for Readiness probe when node is Leader even if Xray is down', async () => {
+        const mockLeaderElection = {
+            isLeader: true,
+            isServingTraffic: true,
+            isDraining: false,
+            identity: 'remnanode-pod-3',
+        };
+        const mockXrayProcess = {
+            getStatus: async () => ({ up: false, pid: null, raw: 'down' }),
+        };
+
+        const controller = new HealthController(mockLeaderElection as any, mockXrayProcess as any);
+
+        let statusCode = 0;
+        const res: any = {
+            status: (code: number) => {
+                statusCode = code;
+                return { json: () => undefined };
+            },
+        };
+
+        await controller.ready(res);
+
+        expect(statusCode).toBe(200);
+    });
+
     it('should return 200 OK for Liveness probe', async () => {
         const mockLeaderElection = { isLeader: false, identity: 'test-pod' };
         const mockXrayProcess = {

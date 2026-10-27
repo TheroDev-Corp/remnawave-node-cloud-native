@@ -40,10 +40,13 @@ export class HealthController {
 
         const role = isLeader ? 'leader' : isDraining ? 'leader-draining' : 'standby';
 
-        // Both leader and standby replicas return 200 OK so that K8s and ArgoCD see all replicas as Ready (2/2).
+        // A leader (or draining leader) is always Ready so the panel can reach it and push the initial config.
+        // A standby is Ready only once its Xray is up (synced from the leader). This makes a rolling update
+        // wait for the new pod to be a real hot standby before the old leader is terminated.
         // Traffic routing to leader is strictly handled by K8s Service selector (role: leader).
-        return res.status(HttpStatus.OK).json({
-            status: 'ok',
+        const ready = isLeader || isDraining || xrayUp;
+        return res.status(ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE).json({
+            status: ready ? 'ok' : 'standby-xray-not-ready',
             role,
             servingTraffic: isServing,
             draining: isDraining,
