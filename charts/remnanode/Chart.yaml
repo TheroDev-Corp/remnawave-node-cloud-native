@@ -3,5 +3,5 @@ name: remnanode
 description: Remnanode Xray stack with Website sidecar
 type: application
 version: 3.2.1
-appVersion: '3.4.3-HA'
+appVersion: '3.4.4-HA'
 
