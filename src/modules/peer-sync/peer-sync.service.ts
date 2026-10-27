@@ -303,6 +303,11 @@ export class PeerSyncService
      */
     public async onPromotedToLeader(): Promise<void> {
         this.logger.log('[PEER-SYNC] Pod promoted to LEADER. Ensuring local Xray state...');
+        this.hasRequestedYield = true;
+        if (this.yieldRetryTimer) {
+            clearTimeout(this.yieldRetryTimer);
+            this.yieldRetryTimer = null;
+        }
 
         if (!(await this.xrayService.isXrayReady())) {
             const cachedRequest = this.internalService.getLastStartXrayRequest();
@@ -602,6 +607,8 @@ export class PeerSyncService
             `[PEER-SYNC] Requesting graceful leadership handoff from leader(s): ${peerIps.join(', ')} (attempt ${attempt}/${maxAttempts})...`,
         );
 
+        let shouldRetry = false;
+
         for (const peerIp of peerIps) {
             try {
                 const url = `http://${peerIp}:${this.peerPort}/internal/leader/yield`;
@@ -626,12 +633,16 @@ export class PeerSyncService
                         reason?: string;
                         retryable?: boolean;
                     };
-                    if (data.success) {
+                    if (data.success && data.reason !== 'already_follower') {
                         this.logger.log(
                             `[PEER-SYNC] 🏆 Leader ${peerIp} yielded leadership. Triggering immediate election cycle to claim lease...`,
                         );
                         await this.leaderElectionService.triggerElectionNow();
                         return;
+                    }
+
+                    if (data.reason === 'already_follower') {
+                        continue;
                     }
 
                     if (
@@ -645,27 +656,24 @@ export class PeerSyncService
                         return;
                     }
 
-                    if (attempt < maxAttempts) {
-                        this.logger.warn(
-                            `[PEER-SYNC] Leader ${peerIp} did not yield (${data.reason}). Scheduling retry ${attempt + 1}/${maxAttempts} in 3s...`,
-                        );
-                        this.scheduleYieldRetry(attempt + 1);
-                        return;
-                    }
+                    this.logger.warn(
+                        `[PEER-SYNC] Leader ${peerIp} did not yield yet (${data.reason}).`,
+                    );
+                    shouldRetry = true;
                 }
             } catch (error) {
-                if (attempt < maxAttempts) {
-                    this.logger.warn(
-                        `[PEER-SYNC] Failed to request leadership yield from ${peerIp}: ${error}. Scheduling retry ${attempt + 1}/${maxAttempts} in 3s...`,
-                    );
-                    this.scheduleYieldRetry(attempt + 1);
-                    return;
-                } else {
-                    this.logger.warn(
-                        `[PEER-SYNC] Failed to request leadership yield from ${peerIp} after ${attempt} attempts: ${error}. Stopping retries.`,
-                    );
-                }
+                this.logger.debug(
+                    `[PEER-SYNC] Failed to reach peer ${peerIp} for leadership yield: ${error}`,
+                );
+                shouldRetry = true;
             }
+        }
+
+        if (shouldRetry && attempt < maxAttempts) {
+            this.logger.warn(
+                `[PEER-SYNC] Scheduling leadership handoff retry ${attempt + 1}/${maxAttempts} in 3s...`,
+            );
+            this.scheduleYieldRetry(attempt + 1);
         }
     }
 
@@ -675,8 +683,8 @@ export class PeerSyncService
         }
         this.yieldRetryTimer = setTimeout(() => {
             this.yieldRetryTimer = null;
-            this.hasRequestedYield = false;
             if (!this.leaderElectionService.isLeader && !this.isShuttingDown) {
+                this.hasRequestedYield = false;
                 // Always re-discover live peer IPs on retry instead of reusing a potentially terminated pod IP
                 void this.requestLeadershipHandoff(undefined, nextAttempt);
             }

@@ -181,7 +181,10 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         this.isLoopRunning = true;
 
         try {
-            if (!this.leaderState && Date.now() < this.suppressAcquisitionUntil) {
+            if (
+                this.isDrainingState ||
+                (!this.leaderState && Date.now() < this.suppressAcquisitionUntil)
+            ) {
                 return;
             }
 
@@ -400,19 +403,21 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             this.eventBus.publish(new LeaderPromotedEvent(this.podName));
         } else if (previous && !leader) {
             this.logger.warn(`Pod "${this.podName}" demoted to FOLLOWER / STANDBY.`);
-            void this.updatePodRoleLabel('standby');
+            if (!this.isDrainingState) {
+                void this.updatePodRoleLabel('standby');
+            }
             this.eventBus.publish(new LeaderDemotedEvent(this.podName));
         }
     }
 
     public async updatePodRoleLabel(role: 'leader' | 'standby'): Promise<void> {
         if (!this.podName || !this.namespace) return;
+        this.appliedRoleLabel = role;
         try {
             const res = await this.client.patchPodLabels(this.namespace, this.podName, {
                 role,
             });
             if (res.status === 200) {
-                this.appliedRoleLabel = role;
                 this.logger.log(
                     `🏷️ Successfully labeled pod "${this.podName}" with role="${role}"`,
                 );
@@ -480,8 +485,9 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         // Release lease immediately so candidate pod claims it at once
         await this.releaseLease();
 
-        // Enter draining state: keep readiness probe 200 OK for 10s so both pods overlap in K8s Service Endpoints!
+        // Enter draining state: keep role="leader" label and readiness 200 OK for 10s so both pods overlap in K8s Service Endpoints!
         this.isDrainingState = true;
+        this.setLeader(false);
         if (this.drainTimer) {
             clearTimeout(this.drainTimer);
         }
@@ -490,7 +496,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
                 `[LEADER-ELECTION] Draining period completed. Stepping down to standby.`,
             );
             this.isDrainingState = false;
-            this.setLeader(false);
+            void this.updatePodRoleLabel('standby');
         }, this.drainDurationMs);
 
         return { success: true };
