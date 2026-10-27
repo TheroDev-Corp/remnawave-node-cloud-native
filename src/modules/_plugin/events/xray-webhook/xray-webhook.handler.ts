@@ -6,6 +6,7 @@ import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 import { TypedConfigService } from '@common/config/app-config';
 import { CidrMatcher } from '@common/utils/cidr-matcher';
 import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
+import { sendWebhook } from '@common/utils/send-webhook';
 import { TorrentBlockerReportModel, XrayWebhookSchema } from '@libs/contracts/models';
 
 import { PluginStateService } from '../../services/plugin-state.service';
@@ -13,7 +14,6 @@ import { UserSuspensionService } from '../../services/user-suspension.service';
 import { XrayWebhookEvent } from './xray-webhook.event';
 
 const SOURCE_REGEX = /^(?:(?:tcp|udp):)?(?:\[(.+?)\]|(.+?))(?::(\d+))?$/;
-const WEBHOOK_TIMEOUT_MS = 5_000;
 
 @Injectable()
 @EventsHandler(XrayWebhookEvent)
@@ -87,7 +87,7 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
             const webhookUrl = this.pluginState.torrentBlocker.getWebhookUrl();
 
             if (webhookUrl) {
-                this.sendWebhook(webhookUrl, report);
+                sendWebhook(webhookUrl, report);
             }
         } catch (error) {
             this.logger.error(`Error in Event XrayWebhookHandler: ${error}`);
@@ -105,16 +105,5 @@ export class XrayWebhookHandler implements IEventHandler<XrayWebhookEvent> {
         if (isIP(candidate) === 0) return null;
 
         return candidate;
-    }
-
-    private sendWebhook(url: string, report: TorrentBlockerReportModel): void {
-        fetch(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(report),
-            signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
-        })
-            .then((response) => response.body?.cancel())
-            .catch(() => void 0);
     }
 }

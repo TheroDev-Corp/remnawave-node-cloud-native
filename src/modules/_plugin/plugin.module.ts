@@ -10,6 +10,7 @@ import { PluginController } from './plugin.controller';
 import { PluginService } from './plugin.service';
 import { QUERIES } from './queries';
 import { PluginStateService } from './services/plugin-state.service';
+import { PostStartService } from './services/post-start.service';
 import { PreStartService } from './services/pre-start.service';
 import { UserSuspensionService } from './services/user-suspension.service';
 
@@ -26,6 +27,7 @@ import { UserSuspensionService } from './services/user-suspension.service';
         PluginStateService,
         UserSuspensionService,
         PreStartService,
+        PostStartService,
         ...QUERIES,
         ...EVENTS,
         ...COMMANDS,
