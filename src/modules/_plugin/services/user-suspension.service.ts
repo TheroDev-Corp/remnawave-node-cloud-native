@@ -14,6 +14,8 @@ interface ISuspendedUserState {
     userDef?: AddUserRequestDto;
 }
 
+type TForwardRef<T> = T;
+
 @Injectable()
 export class UserSuspensionService implements OnModuleDestroy {
     private readonly logger = new Logger(UserSuspensionService.name);
@@ -21,11 +23,11 @@ export class UserSuspensionService implements OnModuleDestroy {
 
     constructor(
         @Inject(forwardRef(() => HandlerService))
-        private readonly handlerService: HandlerService,
+        private readonly handlerService: TForwardRef<HandlerService>,
         private readonly internalService: InternalService,
         @InjectXtls() private readonly xtlsApi: XtlsApi,
         @Inject(forwardRef(() => PeerSyncService))
-        private readonly peerSyncService: PeerSyncService,
+        private readonly peerSyncService: TForwardRef<PeerSyncService>,
     ) {}
 
     onModuleDestroy(): void {

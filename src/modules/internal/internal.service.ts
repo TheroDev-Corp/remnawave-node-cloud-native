@@ -55,7 +55,7 @@ export class InternalService {
         hashes: StartXrayCommand.Request['internals']['hashes'],
         newConfig: Record<string, unknown>,
     ): Promise<void> {
-        this.cleanup();
+        this.cleanup(false);
 
         this.emptyConfigHash = hashes.emptyConfig;
         this.xrayConfig = newConfig;
@@ -234,8 +234,10 @@ export class InternalService {
         this.lastStartXrayRequest = req;
     }
 
-    public cleanup(): void {
-        this.lastStartXrayRequest = null;
+    public cleanup(clearLastRequest = true): void {
+        if (clearLastRequest) {
+            this.lastStartXrayRequest = null;
+        }
         this.logger.log('Cleaning up internal service.');
 
         this.inboundsHashMap.clear();

@@ -72,9 +72,16 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
 
         app.post('/internal/leader/yield', verifySecret, async (req: Request, res: Response) => {
             try {
-                const { candidatePod, candidateBootTime } = req.body as {
+                const {
+                    candidatePod,
+                    candidateBootTime,
+                    candidateRestartCount,
+                    candidateXrayReady,
+                } = req.body as {
                     candidatePod?: string;
                     candidateBootTime?: number;
+                    candidateRestartCount?: number;
+                    candidateXrayReady?: boolean;
                 };
 
                 if (!candidatePod || typeof candidateBootTime !== 'number') {
@@ -87,9 +94,26 @@ export class HealthService implements OnModuleInit, OnApplicationShutdown {
                 const result = await this.leaderElectionService.yieldLeadership(
                     candidatePod,
                     candidateBootTime,
+                    candidateRestartCount ?? 0,
+                    candidateXrayReady ?? true,
                 );
 
                 res.status(result.success ? 200 : 409).json(result);
+            } catch (error) {
+                res.status(500).json({
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        });
+
+        app.post('/internal/leader/promote', verifySecret, async (_req: Request, res: Response) => {
+            try {
+                await this.leaderElectionService.triggerElectionNow();
+                res.status(200).json({
+                    success: true,
+                    isLeader: this.leaderElectionService.isLeader,
+                    identity: this.leaderElectionService.identity,
+                });
             } catch (error) {
                 res.status(500).json({
                     error: error instanceof Error ? error.message : String(error),

@@ -102,6 +102,36 @@ export class XrayService implements OnApplicationBootstrap {
         return this.isXrayOnline;
     }
 
+    public get isStarting(): boolean {
+        return this.isXrayStartedProccesing;
+    }
+
+    public markOffline(): void {
+        this.isXrayOnline = false;
+    }
+
+    /**
+     * Checks both in-memory state and actual s6 process status (`s6-svstat`).
+     * If the underlying `rw-core` process was killed (e.g. by Linux OOM killer),
+     * automatically resets `isXrayOnline` to `false`.
+     */
+    public async isXrayReady(): Promise<boolean> {
+        if (this.isXrayStartedProccesing || !this.isXrayOnline) {
+            return false;
+        }
+
+        const status = await this.xrayProcess.getStatus();
+        if (!status.up) {
+            this.logger.warn(
+                'Xray process is down in s6 despite isXrayOnline=true (possibly OOMKilled or crashed). Marking Xray offline.',
+            );
+            this.isXrayOnline = false;
+            return false;
+        }
+
+        return true;
+    }
+
     public async startXray(
         body: StartXrayCommand.Request,
         ip: string,
@@ -167,6 +197,7 @@ export class XrayService implements OnApplicationBootstrap {
                 }
 
                 if (!shouldRestart) {
+                    this.internalService.setLastStartXrayRequest(body);
                     return ok(
                         new StartXrayResponseModel(
                             true,
@@ -193,6 +224,7 @@ export class XrayService implements OnApplicationBootstrap {
                 internal: this.internal,
             });
 
+            this.internalService.setLastStartXrayRequest(body);
             await this.internalService.extractUsersFromConfig(body.internals.hashes, fullConfig);
 
             await this.coreLoaderService.prepare(fullConfig.geodata);
@@ -318,10 +350,11 @@ export class XrayService implements OnApplicationBootstrap {
 
     public async getNodeHealthCheck(): Promise<TResult<GetNodeHealthCheckResponseModel>> {
         try {
+            const isOnline = await this.isXrayReady();
             return ok(
                 new GetNodeHealthCheckResponseModel(
                     true,
-                    this.isXrayOnline,
+                    isOnline,
                     this.xrayVersion,
                     this.nodeVersion,
                 ),

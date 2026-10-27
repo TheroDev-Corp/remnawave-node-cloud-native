@@ -18,6 +18,12 @@ export interface IK8sLease {
     };
 }
 
+export interface IK8sPodInfo {
+    creationTimestamp?: string;
+    labels?: Record<string, string>;
+    restartCount: number;
+}
+
 export class K8sLeaseClient {
     private readonly baseUrl: string;
     private readonly token: string;
@@ -71,6 +77,42 @@ export class K8sLeaseClient {
         return {
             status: res.statusCode,
             lease: res.statusCode === 200 ? (JSON.parse(res.body) as IK8sLease) : null,
+        };
+    }
+
+    public async getPodInfo(
+        namespace: string,
+        name: string,
+    ): Promise<{ status: number; pod: IK8sPodInfo | null }> {
+        const path = `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`;
+        const res = await this.request('GET', path);
+        if (res.statusCode !== 200) {
+            return { status: res.statusCode, pod: null };
+        }
+
+        const raw = JSON.parse(res.body) as {
+            metadata?: {
+                creationTimestamp?: string;
+                labels?: Record<string, string>;
+            };
+            status?: {
+                containerStatuses?: Array<{
+                    name?: string;
+                    restartCount?: number;
+                }>;
+            };
+        };
+
+        const containers = raw.status?.containerStatuses ?? [];
+        const mainContainer = containers.find((c) => c.name === 'remnanode') ?? containers[0];
+
+        return {
+            status: 200,
+            pod: {
+                creationTimestamp: raw.metadata?.creationTimestamp,
+                labels: raw.metadata?.labels,
+                restartCount: mainContainer?.restartCount ?? 0,
+            },
         };
     }
 

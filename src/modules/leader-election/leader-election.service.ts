@@ -10,6 +10,12 @@ import { LeaderDemotedEvent } from './events/leader-demoted.event';
 import { LeaderPromotedEvent } from './events/leader-promoted.event';
 import { IK8sLease, K8sLeaseClient } from './k8s-lease.client';
 
+export interface ILeaderHealthGate {
+    canAcquireLeadership(): Promise<boolean>;
+    checkLeaderXrayHealth(): Promise<{ healthy: boolean; hasHealthyPeer: boolean }>;
+    notifyStandbyToPromote(): Promise<void>;
+}
+
 function formatK8sMicroTime(date = new Date()): string {
     return date.toISOString().replace(/\.(\d{3})Z$/, '.$1000Z');
 }
@@ -26,6 +32,8 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     private readonly client: K8sLeaseClient;
     private readonly bootTime = Date.now();
+    private podCreationTime = Date.now();
+    private restartCount = 0;
     private leaderSince = 0;
     private isDrainingState = false;
     private drainTimer: NodeJS.Timeout | null = null;
@@ -34,9 +42,12 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     private suppressAcquisitionUntil = 0;
     private leaderState = false;
+    private appliedRoleLabel: 'leader' | 'standby' | null = null;
     private currentResourceVersion: string | null = null;
     private loopTimer: NodeJS.Timeout | null = null;
+    private isLoopRunning = false;
     private isShuttingDown = false;
+    private healthGate: ILeaderHealthGate | null = null;
 
     constructor(
         private readonly configService: TypedConfigService,
@@ -77,7 +88,11 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     }
 
     public get startedAt(): number {
-        return this.bootTime;
+        return this.podCreationTime;
+    }
+
+    public get containerRestartCount(): number {
+        return this.restartCount;
     }
 
     public get isDraining(): boolean {
@@ -86,6 +101,10 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
 
     public get isServingTraffic(): boolean {
         return this.leaderState || this.isDrainingState;
+    }
+
+    public registerHealthGate(gate: ILeaderHealthGate): void {
+        this.healthGate = gate;
     }
 
     async onApplicationBootstrap(): Promise<void> {
@@ -98,6 +117,8 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             `Starting K8s Leader Election (pod: ${this.podName}, namespace: ${this.namespace}, lease: ${this.leaseName})...`,
         );
 
+        await this.initPodMetadata();
+
         // Immediate first attempt
         await this.electionLoop();
 
@@ -105,6 +126,32 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         this.loopTimer = setInterval(() => {
             void this.electionLoop();
         }, this.renewIntervalMs);
+    }
+
+    private async initPodMetadata(): Promise<void> {
+        try {
+            const { status, pod } = await this.client.getPodInfo(this.namespace, this.podName);
+            if (status === 200 && pod) {
+                this.restartCount = pod.restartCount;
+                if (pod.creationTimestamp) {
+                    const parsedTime = new Date(pod.creationTimestamp).getTime();
+                    if (Number.isFinite(parsedTime) && parsedTime > 0) {
+                        this.podCreationTime = parsedTime;
+                    }
+                }
+                this.logger.log(
+                    `Pod metadata initialized: creationTime=${new Date(this.podCreationTime).toISOString()}, restartCount=${this.restartCount}, currentRoleLabel=${pod.labels?.role ?? 'none'}`,
+                );
+            }
+        } catch (error) {
+            this.logger.warn(
+                `Failed to fetch initial pod metadata: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        }
+
+        // Always initialize pod role label as "standby" on boot to clear any stale "leader" label
+        // left over from a previous OOMKilled container instance and ensure standby pods are labeled.
+        await this.updatePodRoleLabel('standby');
     }
 
     async onApplicationShutdown(signal?: string): Promise<void> {
@@ -130,15 +177,23 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     }
 
     private async electionLoop(): Promise<void> {
-        if (this.isShuttingDown) return;
-        if (!this.leaderState && Date.now() < this.suppressAcquisitionUntil) {
-            return;
-        }
+        if (this.isShuttingDown || this.isLoopRunning) return;
+        this.isLoopRunning = true;
 
         try {
+            if (!this.leaderState && Date.now() < this.suppressAcquisitionUntil) {
+                return;
+            }
+
             const { status, lease } = await this.client.getLease(this.namespace, this.leaseName);
 
             if (status === 404) {
+                if (this.healthGate && !(await this.healthGate.canAcquireLeadership())) {
+                    this.logger.debug(
+                        `Deferring initial lease creation on "${this.podName}" until local Xray is ready.`,
+                    );
+                    return;
+                }
                 // Lease does not exist -> try to create and acquire
                 await this.tryCreateAndAcquire();
                 return;
@@ -154,12 +209,34 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
                 const isExpired = this.isLeaseExpired(renewTimeStr, duration);
 
                 if (isCurrentHolder) {
+                    if (this.healthGate) {
+                        const { healthy, hasHealthyPeer } =
+                            await this.healthGate.checkLeaderXrayHealth();
+                        if (!healthy && hasHealthyPeer) {
+                            this.logger.warn(
+                                `⚠️ Local Xray process on leader "${this.podName}" is down (OOM/crash) while standby peer is healthy! Stepping down immediately...`,
+                            );
+                            this.suppressAcquisitionUntil = Date.now() + 15_000;
+                            await this.releaseLease();
+                            this.setLeader(false);
+                            await this.healthGate.notifyStandbyToPromote();
+                            return;
+                        }
+                    }
+
                     // We are current leader -> renew
                     await this.tryRenew(lease);
                     if (!this.leaderState) {
                         this.setLeader(true);
                     }
                 } else if (!holder || isExpired) {
+                    if (this.healthGate && !(await this.healthGate.canAcquireLeadership())) {
+                        this.logger.debug(
+                            `Lease "${this.leaseName}" is vacant/expired, but "${this.podName}" Xray is not ready yet. Waiting for Xray startup before acquiring...`,
+                        );
+                        return;
+                    }
+
                     // Lease is expired or vacant -> try acquire
                     this.logger.log(
                         `Lease "${this.leaseName}" expired (previous holder: ${holder}), attempting acquisition...`,
@@ -179,6 +256,15 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
             this.logger.warn(
                 `Leader election cycle failed: ${error instanceof Error ? error.message : String(error)}`,
             );
+        } finally {
+            if (!this.isShuttingDown && this.enabled) {
+                const expectedRole: 'leader' | 'standby' =
+                    this.leaderState || this.isDrainingState ? 'leader' : 'standby';
+                if (this.appliedRoleLabel !== expectedRole) {
+                    await this.updatePodRoleLabel(expectedRole);
+                }
+            }
+            this.isLoopRunning = false;
         }
     }
 
@@ -229,6 +315,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     }
 
     private async tryAcquire(lease: IK8sLease): Promise<void> {
+        const previousHolder = lease.spec.holderIdentity;
         const now = formatK8sMicroTime();
         const transitions = (lease.spec.leaseTransitions ?? 0) + 1;
         const updatedLease: IK8sLease = {
@@ -247,6 +334,29 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
         if (res.status === 200 && res.lease) {
             this.currentResourceVersion = res.lease.metadata.resourceVersion ?? null;
             this.setLeader(true);
+
+            // If previous holder died without releasing the lease (e.g. OOMKilled / SIGKILL),
+            // forcibly strip its stale role="leader" pod label so K8s Service stops sending traffic to it.
+            if (previousHolder && previousHolder !== this.podName) {
+                void this.demoteStaleLeaderLabel(previousHolder);
+            }
+        }
+    }
+
+    private async demoteStaleLeaderLabel(stalePodName: string): Promise<void> {
+        try {
+            const res = await this.client.patchPodLabels(this.namespace, stalePodName, {
+                role: 'standby',
+            });
+            if (res.status === 200) {
+                this.logger.log(
+                    `🧹 Cleared stale role="leader" label on previous holder pod "${stalePodName}" -> role="standby"`,
+                );
+            }
+        } catch (error) {
+            this.logger.debug(
+                `Could not patch stale pod "${stalePodName}" label (may already be deleted): ${error}`,
+            );
         }
     }
 
@@ -302,15 +412,18 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
                 role,
             });
             if (res.status === 200) {
+                this.appliedRoleLabel = role;
                 this.logger.log(
                     `🏷️ Successfully labeled pod "${this.podName}" with role="${role}"`,
                 );
             } else {
+                this.appliedRoleLabel = null;
                 this.logger.warn(
                     `Failed to patch pod label role="${role}" (HTTP ${res.status}): ${res.body}`,
                 );
             }
         } catch (error) {
+            this.appliedRoleLabel = null;
             this.logger.warn(
                 `Error patching pod label role="${role}": ${error instanceof Error ? error.message : String(error)}`,
             );
@@ -323,16 +436,32 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
     public async yieldLeadership(
         candidatePod: string,
         candidateBootTime: number,
-    ): Promise<{ success: boolean; reason?: string }> {
+        candidateRestartCount = 0,
+        candidateXrayReady = true,
+    ): Promise<{ success: boolean; reason?: string; retryable?: boolean }> {
         if (!this.leaderState) {
             return { success: true, reason: 'already_follower' };
         }
 
-        if (candidateBootTime <= this.bootTime) {
+        if (!candidateXrayReady) {
             this.logger.warn(
-                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}" (candidateBootTime ${candidateBootTime} <= local ${this.bootTime})`,
+                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}": candidate Xray is not ready yet.`,
             );
-            return { success: false, reason: 'candidate_not_newer' };
+            return { success: false, reason: 'candidate_xray_not_ready', retryable: true };
+        }
+
+        if (candidateRestartCount > 0) {
+            this.logger.warn(
+                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}": candidate has restartCount=${candidateRestartCount} (container restarted after OOM/crash, not a new deployment pod).`,
+            );
+            return { success: false, reason: 'candidate_restarted', retryable: false };
+        }
+
+        if (candidateBootTime <= this.podCreationTime) {
+            this.logger.warn(
+                `[LEADER-ELECTION] Rejecting yield request from "${candidatePod}" (candidateBootTime ${candidateBootTime} <= local ${this.podCreationTime})`,
+            );
+            return { success: false, reason: 'candidate_not_newer', retryable: false };
         }
 
         // Anti-flapping: If candidate is newer, but current leader acquired leadership only recently AND candidate booted BEFORE current leader became leader,
@@ -372,6 +501,7 @@ export class LeaderElectionService implements OnApplicationBootstrap, OnApplicat
      */
     public async triggerElectionNow(): Promise<void> {
         if (this.isShuttingDown) return;
+        this.suppressAcquisitionUntil = 0;
         await this.electionLoop();
     }
 }

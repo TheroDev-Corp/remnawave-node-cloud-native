@@ -3,8 +3,8 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { TNodeMetadata } from '@libs/contracts/models';
 
 import {
-    INodeIntegration,
-    INodeIntegrationResult,
+    type INodeIntegration,
+    type INodeIntegrationResult,
     NODE_INTEGRATIONS,
 } from './integrations.contract';
 
