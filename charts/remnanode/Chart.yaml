@@ -2,6 +2,6 @@ apiVersion: v2
 name: remnanode
 description: Remnanode Xray stack with Website sidecar
 type: application
-version: 3.4.0
-appVersion: '3.5.0-HA'
+version: 3.4.1
+appVersion: '3.5.1-HA'
 

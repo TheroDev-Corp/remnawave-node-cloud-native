@@ -65,7 +65,7 @@ leaderElection:
 peerSync:
   enabled: true
 
-# Prometheus metrics (Go node 3.5.0-HA and later; the TS image ignores METRICS_PORT).
+# Prometheus metrics (Go node 3.5.1-HA and later; the TS image ignores METRICS_PORT).
 # The node serves plain-HTTP /metrics on its own port: xray traffic per inbound and
 # outbound, online users, xray up/restarts, HA role, observatory and balancer state.
 # Every pod (leader and standbys) exposes a container port named "metrics" and, by
