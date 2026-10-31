@@ -276,6 +276,12 @@ func TestHelmChartHA(t *testing.T) {
 	if os.Getenv("KIND_KEEP") == "" {
 		t.Cleanup(func() { _ = exec.Command("kubectl", "--context", kctx, "delete", "ns", e.ns, "--wait=false").Run() })
 	}
+	for i := 0; i < 60; i++ { // the namespace's default service account appears asynchronously
+		if _, err := e.kubectl("get", "serviceaccount", "default"); err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	values := map[string]any{
 		"replicaCount": 2,
 		"website":      map[string]any{"enabled": false},
@@ -339,12 +345,13 @@ func TestHelmChartHA(t *testing.T) {
 		"log": map[string]any{"loglevel": "warning"},
 		"inbounds": []any{
 			map[string]any{"tag": "s-vl", "listen": "0.0.0.0", "port": 1080, "protocol": "socks", "settings": map[string]any{"udp": false}},
+			map[string]any{"tag": "h-vl", "listen": "0.0.0.0", "port": 8118, "protocol": "http", "settings": map[string]any{}},
 		},
 		"outbounds": []any{
 			map[string]any{"tag": "vl", "protocol": "vless", "settings": map[string]any{"vnext": []any{map[string]any{"address": svc, "port": 21001,
 				"users": []any{map[string]any{"id": u3.vless, "encryption": "none"}}}}}},
 		},
-		"routing": map[string]any{"rules": []any{map[string]any{"inboundTag": []any{"s-vl"}, "outboundTag": "vl"}}},
+		"routing": map[string]any{"rules": []any{map[string]any{"inboundTag": []any{"s-vl", "h-vl"}, "outboundTag": "vl"}}},
 	}
 	ccfg, _ := json.Marshal(clientCfg)
 	cf := filepath.Join(t.TempDir(), "client.json")
@@ -353,43 +360,52 @@ func TestHelmChartHA(t *testing.T) {
 	override := fmt.Sprintf(`{"spec":{"containers":[{"name":"client","image":%q,"imagePullPolicy":"IfNotPresent","command":["/usr/local/bin/xray","run","-c","/cfg/client.json"],"volumeMounts":[{"name":"cfg","mountPath":"/cfg"}]}],"volumes":[{"name":"cfg","configMap":{"name":"client"}}]}}`, image)
 	e.must("run", "client", "--image="+image, "--overrides="+override, "--restart=Never")
 	e.must("wait", "--for=condition=Ready", "pod/client", "pod/web", "--timeout=120s")
-	socks, stopSocks := e.forward("pod/client", 1080)
-	defer stopSocks()
-	target := "web:8080"
-	if n, err := socksGet(socks, target); err != nil || n != payload {
-		t.Fatalf("traffic through the leader as the incrementally added user: %d %v", n, err)
+	e.must("expose", "pod", "client", "--port=8118")
+	// The prober downloads through the client's HTTP proxy every 200 ms,
+	// inside the cluster, and logs "<uptime> OK|FAIL" (kubectl port-forward
+	// dies on the first reset connection, so it can't measure outages).
+	e.must("run", "prober", "--image=busybox:1.36.1", "--image-pull-policy=IfNotPresent", "--env=http_proxy=http://client:8118", "--",
+		"sh", "-c", `while true; do read u _ </proc/uptime; if wget -q -T 5 -O /dev/null http://web:8080/f; then echo "$u OK"; else echo "$u FAIL"; fi; sleep 0.2; done`)
+	e.must("wait", "--for=condition=Ready", "pod/prober", "--timeout=120s")
+	if !e.waitOK(60 * time.Second) {
+		t.Fatal("no traffic through the leader as the incrementally added user")
 	}
 	e.note("traffic via the leader-only Service as user 3 (added with add-user): %d KiB OK", payload>>10)
 
-	// probe downloads every 200 ms in the background and records outages.
 	type probeResult struct {
 		ok, fail int
 		maxGap   time.Duration
 	}
+	// probe reads the prober's results for the next d.
 	probe := func(d time.Duration) probeResult {
+		start := e.uptime()
+		time.Sleep(d)
+		end := e.uptime()
 		var res probeResult
-		var downSince time.Time
-		end := time.Now().Add(d)
-		for time.Now().Before(end) {
-			n, err := socksGet(socks, target)
-			if err == nil && n == payload {
+		var downSince float64 = -1
+		var last float64
+		for _, l := range e.proberLines() {
+			if l.t < start || l.t > end {
+				continue
+			}
+			last = l.t
+			if l.ok {
 				res.ok++
-				if !downSince.IsZero() {
-					if g := time.Since(downSince); g > res.maxGap {
+				if downSince >= 0 {
+					if g := time.Duration((l.t - downSince) * float64(time.Second)); g > res.maxGap {
 						res.maxGap = g
 					}
-					downSince = time.Time{}
+					downSince = -1
 				}
 			} else {
 				res.fail++
-				if downSince.IsZero() {
-					downSince = time.Now()
+				if downSince < 0 {
+					downSince = l.t
 				}
 			}
-			time.Sleep(200 * time.Millisecond)
 		}
-		if !downSince.IsZero() {
-			res.maxGap = time.Since(downSince)
+		if downSince >= 0 {
+			res.maxGap = time.Duration((last - downSince) * float64(time.Second))
 		}
 		return res
 	}
@@ -414,8 +430,8 @@ func TestHelmChartHA(t *testing.T) {
 	time.Sleep(15 * time.Second)
 	cur := e.leader(30*time.Second, "")
 	e.note("after the replacement pod caught up: leader %s, pods %v", cur, e.pods())
-	if n, err := socksGet(socks, target); err != nil || n != payload {
-		t.Errorf("traffic after hand-off to the replacement: %d %v", n, err)
+	if !e.waitOK(15 * time.Second) {
+		t.Errorf("no traffic after hand-off to the replacement")
 	}
 
 	// 5. Hard leader loss (SIGKILL, no release): the lease expires (10 s), the
@@ -545,6 +561,46 @@ func (e *env) diag(when string) {
 		parts = append(parts, fmt.Sprintf("%s(%s xray=%v u3down=%s)", p[len(p)-5:], role, hc["xrayInternalStatusCached"], u3))
 	}
 	e.note("diag %s: %s", when, strings.Join(parts, " "))
+}
+
+func (e *env) uptime() float64 {
+	out, _ := e.kubectl("exec", "prober", "--", "cat", "/proc/uptime")
+	f, _ := strconv.ParseFloat(strings.Fields(out + " 0")[0], 64)
+	return f
+}
+
+type proberLine struct {
+	t  float64
+	ok bool
+}
+
+func (e *env) proberLines() []proberLine {
+	out, _ := e.kubectl("logs", "prober")
+	var lines []proberLine
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) == 2 {
+			if t, err := strconv.ParseFloat(f[0], 64); err == nil {
+				lines = append(lines, proberLine{t, f[1] == "OK"})
+			}
+		}
+	}
+	return lines
+}
+
+// waitOK waits for a successful prober download that started after now.
+func (e *env) waitOK(d time.Duration) bool {
+	from := e.uptime()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		for _, l := range e.proberLines() {
+			if l.t > from && l.ok {
+				return true
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }
 
 func (e *env) report() {

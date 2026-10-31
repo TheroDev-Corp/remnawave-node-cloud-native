@@ -2,7 +2,7 @@
 
 A drop-in replacement for the TS node in this repository. It exposes the same API on `NODE_PORT`, reads the same `SECRET_KEY` and env vars, and runs xray-core as a supervised child process. The stock panel shouldn't be able to tell it apart. The TS node in `../src` is untouched.
 
-**Status: milestones 1–4 of 5.** All 25 contract routes are implemented. The 20 the panel calls are tested end to end against a real xray, a side-by-side run against the published TS image (`3.4.5-HA`) shows 0 differences the panel could observe, and the Helm chart runs the Go node with HA in a kind cluster through failover and rolling updates without dropping a user's traffic.
+**Status: all 5 milestones done.** All 25 contract routes are implemented. The 20 the panel calls are tested end to end against a real xray, a side-by-side run against the published TS image (`3.4.5-HA`) shows 0 differences the panel could observe, and the Helm chart runs the Go node with HA in a kind cluster through failover and rolling updates without dropping a user's traffic.
 
 | Milestone | Scope | State |
 |---|---|---|
@@ -10,7 +10,7 @@ A drop-in replacement for the TS node in this repository. It exposes the same AP
 | 2 | all 20 panel endpoints + must-match items (numeric counters, semver `nodeVersion`, non-2xx `get-system-stats` when xray is down, bit-exact HashedSet, atomic reset) | ✅ |
 | 3 | TS-vs-Go container parity harness (same `SECRET_KEY`, generated xray config diff, traffic counters) | ✅ |
 | 4 | HA layer (Lease election, pod labels, peer sync) with the fork's bugs fixed, tested in kind | ✅ |
-| 5 | Dockerfile, resource numbers, parity checklist | ⏳ |
+| 5 | Dockerfile, resource numbers, parity checklist | ✅ |
 
 ## Layout
 
@@ -108,13 +108,72 @@ Configuration is the fork's: `K8S_LEADER_ELECTION_ENABLED`, `K8S_LEASE_NAME`, `P
 
 `internal/kindtest` installs `charts/remnanode` with two Go replicas in a kind cluster, plays the panel through a port-forward to the leader, and runs an xray client pod that downloads through the leader-only Service as a user added with `add-user` (not in the original config). It probes every 200 ms through each event:
 
-KIND_RESULTS_PLACEHOLDER
+| Event | Leader change | Downloads during the event |
+|---|---|---|
+| Cold start | one leader 1 s after install, standby hot 1.3 s after the panel's push | — |
+| Leader pod deleted (graceful) | 0.1 s | 218 ok, 0 failed |
+| Leader pod force-deleted | 1.3 s | 241 ok, 0 failed |
+| xray SIGKILLed on the leader (OOM-style) | 2 s (leader steps down) | 179 ok, 1 failed (2.2 s) |
+| Node process SIGKILLed on the leader (lease not released) | 1.7 s (restarted container releases its old lease) | 230 ok, 1 failed (2.2 s) |
+| Rolling update (`rollout restart`) | hand-off to a new pod | 578 ok, 0 failed |
+
+The probe runs in the cluster (busybox `wget` through the client's HTTP proxy, every 200 ms), not through `kubectl port-forward`, which dies on the first reset connection.
 
 ```bash
 kind create cluster --name rwnode
 kind load docker-image --name rwnode remnawave-node-go:dev   # + busybox:1.36.1
 KIND_CONTEXT=kind-rwnode KIND_IMAGE=remnawave-node-go:dev go test -v -timeout 30m ./internal/kindtest/
 ```
+
+## Image and resources (milestone 5)
+
+`Dockerfile` builds a static Go binary (`CGO_ENABLED=0`) and copies it onto `scratch` with what the TS image ships next to the node: xray-core v26.10.21 (`/usr/local/bin/xray`, `rw-core` symlink, geoip/geosite), geocheck 0.3.0, `asn-prefixes.lmdb`, and CA certificates. Downloads are checksum-verified like in `docker/Dockerfile`. No shell, no s6, no Node.js.
+
+```bash
+docker buildx build -t remnawave-node-go go-node
+```
+
+Offline builds can replace the download stages with local folders: `--build-context build=… --build-context xray=… --build-context geocheck=… --build-context asn=…` (each folder holds what the stage would produce). The harness images were built that way, with the final stage unchanged.
+
+Measured by the parity harness, both images amd64 on the same colima VM (Rosetta), whole container (node + xray), same config and traffic:
+
+| | TS `3.4.5-HA` | Go |
+|---|---|---|
+| Image, on disk / compressed | 469 MB / 115 MB | 117 MB / 31 MB (incl. the 12.6 MB ASN database) |
+| Memory, idle with xray running | 190 MiB (6 GiB VM), 253 MiB (8 GiB VM) | 98–99 MiB on both |
+| Memory after 3 × 512 KiB per user | 200 / 261 MiB | 103–104 MiB |
+| CPU, idle | 0.11–0.25 % | 0.05–0.09 % |
+| Processes/threads (PIDs) | 51–53 | 19–22 |
+
+xray-core is the same binary in both, so the difference is the node itself: Node.js + V8 (whose heap grows with available memory) and s6 versus one Go process.
+
+## Parity checklist
+
+| Area | Item | Checked by |
+|---|---|---|
+| Transport | mTLS TLS 1.3, client cert against the panel CA, h2 off | api tests, e2e, parity |
+| | HKDF SNI (`SNI_VERIFICATION`) | secretkey test vs TS `deriveSni` |
+| | RS256 JWT, socket dropped on bad JWT or unknown route | api tests, parity |
+| | Case-insensitive, trailing-slash-tolerant routes, HEAD for GET | api tests, parity |
+| Bodies | zstd (panel settings, 32 MiB window), gzip, deflate, br requests | api tests vs Node zlib |
+| | `{"response":…}` envelope, 201 for POST, Nest error body | parity |
+| | zod issues on 400, unknown keys stripped | `TestZodParity` (36 bodies), parity |
+| | helmet headers, weak ETag, Vary, br/gzip/deflate negotiation ≥ 1 KiB | `TestNegotiateEncoding`, parity |
+| SECRET_KEY | 7 integrity checks, PEM normalisation | secretkey tests vs TS |
+| xray | Generated config (API inbound/rules, policy, torrent rules, webhook) | parity (3 states, identical) |
+| | No restart on identical hashes, HashedSet bit-exact | e2e, hashedset vs `@remnawave/hashed-set` |
+| | Start failure text (s6-svstat format, last log line) | parity |
+| | Custom core loader, geodata assets | unit tests |
+| Users | add/remove user(s) per protocol incl. SS2022 and Hysteria 2 | e2e against xray, parity |
+| Stats | all stats routes, numbers not strings, reset semantics | e2e (zod), parity (byte-equal counters) |
+| | online status, user IP lists | parity (client container IP) |
+| | `get-system-stats` 500/A010 while xray is down | e2e, parity |
+| Plugins | torrent blocker via real BitTorrent handshake, reports, suspension/restore | e2e, parity |
+| | ipList and asList ignore lists (ASN database) | e2e, unit, `internal/asn` vs lmdb-js |
+| | nftables / drop routes as no-ops (fork) | parity |
+| Health | `/node/health/*`, `HEALTH_PORT` `/health/live`, `/health/ready` | unit, kind (probes) |
+| HA | Lease election, role labels, failover, hand-off, xray health gate | `internal/ha`, kind |
+| | Peer sync: replication, snapshot + journal, plugin | `internal/ha`, kind |
 
 ## Fork bugs fixed by design
 
@@ -141,6 +200,7 @@ These are fixed in the Go node. Each one can be patched in the TS fork separatel
 7. **Replication could reorder operations.** TS fires each replication with `void fetch(…)`, so a quick `add-user` + `remove-user` can arrive reversed. Go sends through one ordered queue.
 
 ## Known gaps
+- **Chart: `node.service.type: ClusterIP` doesn't install.** The api Service always sets `externalTrafficPolicy` (default `Local`), which Kubernetes rejects for ClusterIP. The kind test uses NodePort. Not changed here (chart, not node).
 
 - **`blockDuration: 0` restores immediately**, as in the TS fork (`setTimeout(…, 0)`). The schema text says "permanent", so the team should decide.
 
