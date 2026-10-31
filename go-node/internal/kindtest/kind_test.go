@@ -6,6 +6,10 @@
 //
 //	KIND_CONTEXT=kind-rwnode KIND_IMAGE=remnawave-node-go:dev go test -v -timeout 30m ./internal/kindtest/
 //
+// KIND_NONROOT=1 also turns on the chart's podSecurity.runAsNonRoot hardening;
+// KIND_ROOT=1 runs the pods as root instead (for comparison). The same settings
+// work as flags: -args -kind-context=… -kind-image=… -kind-nonroot / -kind-root.
+//
 // The image (and busybox:1.36.1) must be loaded with `kind load docker-image`.
 package kindtest
 
@@ -15,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -36,6 +41,20 @@ import (
 )
 
 const payload = 256 << 10
+
+var (
+	kindContextFlag = flag.String("kind-context", "", "kubectl context of the kind cluster (or KIND_CONTEXT)")
+	kindImageFlag   = flag.String("kind-image", "", "node image loaded into kind (or KIND_IMAGE)")
+	kindNonRootFlag = flag.Bool("kind-nonroot", false, "turn on podSecurity.runAsNonRoot (or KIND_NONROOT=1)")
+	kindRootFlag    = flag.Bool("kind-root", false, "run the pods as root (podSecurity.runAsUser 0), for comparison (or KIND_ROOT=1)")
+)
+
+func envOr(env, flagVal string) string {
+	if v := os.Getenv(env); v != "" {
+		return v
+	}
+	return flagVal
+}
 
 type env struct {
 	t       *testing.T
@@ -261,7 +280,7 @@ func xrayConfig(users []user) (map[string]any, map[string]any) {
 }
 
 func TestHelmChartHA(t *testing.T) {
-	kctx, image := os.Getenv("KIND_CONTEXT"), os.Getenv("KIND_IMAGE")
+	kctx, image := envOr("KIND_CONTEXT", *kindContextFlag), envOr("KIND_IMAGE", *kindImageFlag)
 	if kctx == "" || image == "" {
 		t.Skip("set KIND_CONTEXT and KIND_IMAGE to run the chart in a kind cluster")
 	}
@@ -296,6 +315,13 @@ func TestHelmChartHA(t *testing.T) {
 			map[string]any{"name": "vless", "port": 21001, "mode": "ingress-sni"},
 			map[string]any{"name": "hysteria2", "port": 21004, "protocol": "udp", "mode": "ingress-sni"},
 		},
+	}
+	if os.Getenv("KIND_NONROOT") != "" || *kindNonRootFlag {
+		// The image runs as nobody either way; this adds the chart's hardening
+		// (runAsNonRoot, no capabilities, RuntimeDefault seccomp).
+		values["podSecurity"] = map[string]any{"runAsNonRoot": true}
+	} else if os.Getenv("KIND_ROOT") != "" || *kindRootFlag {
+		values["podSecurity"] = map[string]any{"runAsUser": 0, "runAsGroup": 0}
 	}
 	vf := filepath.Join(t.TempDir(), "values.json")
 	raw, _ := json.Marshal(values)

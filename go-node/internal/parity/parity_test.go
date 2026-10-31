@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -426,7 +427,19 @@ func startBody(cfg, hashes map[string]any) map[string]any {
 
 // ---- the test ---------------------------------------------------------------
 
+var (
+	parityTSFlag     = flag.String("parity-ts-image", "", "TS node image (or PARITY_TS_IMAGE)")
+	parityGoFlag     = flag.String("parity-go-image", "", "Go node image (or PARITY_GO_IMAGE)")
+	parityReportFlag = flag.String("parity-report", "", "markdown report path (or PARITY_REPORT)")
+)
+
 func TestParity(t *testing.T) {
+	// Flags are an alternative to the env vars; the env wins when both are set.
+	for env, val := range map[string]string{"PARITY_TS_IMAGE": *parityTSFlag, "PARITY_GO_IMAGE": *parityGoFlag, "PARITY_REPORT": *parityReportFlag} {
+		if os.Getenv(env) == "" && val != "" {
+			t.Setenv(env, val)
+		}
+	}
 	tsImage, goImage := os.Getenv("PARITY_TS_IMAGE"), os.Getenv("PARITY_GO_IMAGE")
 	if tsImage == "" || goImage == "" {
 		t.Skip("set PARITY_TS_IMAGE and PARITY_GO_IMAGE to run the container parity harness")
