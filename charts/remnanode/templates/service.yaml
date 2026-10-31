@@ -18,8 +18,12 @@ metadata:
     {{- toYaml $annotations | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ dig "service" "type" "LoadBalancer" .Values.node }}
+  {{- $svcType := dig "service" "type" "LoadBalancer" .Values.node }}
+  type: {{ $svcType }}
+  {{- if or (eq $svcType "LoadBalancer") (eq $svcType "NodePort") }}
+  # Node-local by default: replicas pinned with nodeSelector each get their own LB.
   externalTrafficPolicy: {{ dig "service" "externalTrafficPolicy" "Local" .Values.node }}
+  {{- end }}
   selector:
     {{- include "remnanode.selectorLabels" . | nindent 4 }}
     role: leader
