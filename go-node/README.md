@@ -44,11 +44,12 @@ The cross-checks run when `node` is installed and `npm ci` has been run in the r
 - `normalizePem`, `deriveSni` and the contract schemas come from the TS sources.
 - The panel's exact zstd settings (level 1, long-distance matching, `windowLog` 25) come from Node's zlib. The test asserts the frame really needs more than an 8 MiB window.
 - HashedSet is checked against `@remnawave/hashed-set`: 5000-member sets, Unicode, 400-step add/delete sequences.
-- `internal/node/e2e_test.go` plays the panel (mTLS, JWT, zstd) against a real xray with VLESS, Trojan, Shadowsocks and SS2022 inbounds. It calls every route the panel uses, and every 2xx body is validated by the TS contract's own zod schemas (31 responses). It also checks:
+- `internal/node/e2e_test.go` plays the panel (mTLS, JWT, zstd) against a real xray with VLESS, Trojan, Shadowsocks, SS2022 and Hysteria 2 inbounds. The Hysteria inbound runs TLS on a self-signed certificate (`testpki.SelfSigned`), which the test client pins by sha256. It calls every route the panel uses, and every 2xx body is validated by the TS contract's own zod schemas (31 responses). It also checks:
   - `get-system-stats` answers 500/A010 while xray is down.
   - `nodeVersion` is semver ≥ 2.7.0 per the `semver` package.
   - A push with identical hashes, or after incremental add/remove-user, does **not** restart xray (same pid).
   - Users really land in, and leave, each inbound, per xray's own API.
+  - Real traffic: a second xray plays the client and downloads 512 KiB through Hysteria 2 and through VLESS. The users' and the inbound's counters, and the online status, must reflect it.
   - `reset:true` zeroes the counters.
   - The torrent blocker regenerates the config.
   - Suspension and restore work, with the fork's bugs fixed (below).
@@ -73,7 +74,6 @@ The fourth listed fork bug (the SECRET_KEY header in peer sync) is about the HA 
 ## Known gaps
 
 - **ASN lookups (`asList`) have no data source yet.** The TS node reads an lmdb-js database that Go can't read without cgo. Until a replacement lands, AS numbers resolve to nothing, as on a lookup miss in TS.
-- **Hysteria add-user is implemented but not covered by the e2e test.** Its inbound needs TLS material.
 - **`blockDuration: 0` restores immediately**, as in the TS fork (`setTimeout(…, 0)`). The schema text says "permanent", so the team should decide.
 
 ## Differences so far

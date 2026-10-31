@@ -10,13 +10,16 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -118,5 +121,43 @@ func (p *PKI) ClientTLS(serverName string) *tls.Config {
 			_, err = cert.Verify(x509.VerifyOptions{Roots: pool})
 			return err
 		},
+	}
+}
+
+// ServerCert is a self-signed TLS server certificate, the kind an operator
+// puts on a Hysteria or VLESS-TLS inbound when there's no public CA.
+type ServerCert struct {
+	CertPEM, KeyPEM string
+	SHA256          string // hex sha256 of the DER, for xray's pinnedPeerCertSha256
+	DER             []byte
+}
+
+// SelfSigned issues a self-signed ECDSA P-256 server certificate for names
+// (DNS names or IP literals), valid for a day.
+func SelfSigned(names ...string) ServerCert {
+	key := must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+	tpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: names[0]},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	for _, n := range names {
+		if ip := net.ParseIP(n); ip != nil {
+			tpl.IPAddresses = append(tpl.IPAddresses, ip)
+		} else {
+			tpl.DNSNames = append(tpl.DNSNames, n)
+		}
+	}
+	der := must(x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key))
+	sum := sha256.Sum256(der)
+	return ServerCert{
+		CertPEM: pemOf("CERTIFICATE", der),
+		KeyPEM:  pemOf("PRIVATE KEY", must(x509.MarshalPKCS8PrivateKey(key))),
+		SHA256:  hex.EncodeToString(sum[:]),
+		DER:     der,
 	}
 }
