@@ -245,6 +245,17 @@ func (s *State) Cleanup(clearLastStart bool) {
 	s.emptyHash = ""
 }
 
+// InboundUsers is the number of users the node tracks per inbound.
+func (s *State) InboundUsers() map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]int, len(s.inbounds))
+	for tag, set := range s.inbounds {
+		out[tag] = set.Len()
+	}
+	return out
+}
+
 // InboundHash exposes one inbound's current hash (tests, debugging).
 func (s *State) InboundHash(tag string) (string, bool) {
 	s.mu.Lock()

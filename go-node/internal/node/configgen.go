@@ -132,6 +132,28 @@ func GenerateAPIConfig(cfg map[string]any, tb TorrentBlockerConfig, apiListen, w
 	return out
 }
 
+// withObservatoryService adds ObservatoryService to the api services when
+// the panel's config runs an observatory, so /metrics can read probe
+// results. Only with METRICS_PORT set: the default config stays identical
+// to the TS node's. Without an observatory xray would refuse to start
+// ("not all dependencies are resolved"), hence the check.
+func withObservatoryService(full map[string]any) {
+	if full["observatory"] == nil && full["burstObservatory"] == nil {
+		return
+	}
+	api, ok := full["api"].(map[string]any)
+	if !ok {
+		return
+	}
+	services, _ := api["services"].([]any)
+	for _, s := range services {
+		if s == "ObservatoryService" {
+			return
+		}
+	}
+	api["services"] = append(services, "ObservatoryService")
+}
+
 func apiInbound(listen string) map[string]any {
 	if host, port, ok := strings.Cut(listen, ":"); ok && !strings.HasPrefix(listen, "@") {
 		// Non-Linux development: a loopback TCP port instead of an abstract socket.

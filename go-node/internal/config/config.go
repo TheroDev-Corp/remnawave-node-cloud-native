@@ -34,10 +34,11 @@ type Config struct {
 	DisableInstanceLock bool
 
 	// Go-only.
-	XrayBinary string // default /usr/local/bin/rw-core, like the TS node
-	Debug      bool   // NODE_ENV=development
-	PodName    string // POD_NAME → HOSTNAME → os.Hostname()
-	PodNS      string
+	XrayBinary  string // default /usr/local/bin/rw-core, like the TS node
+	MetricsPort int    // METRICS_PORT: plain-HTTP Prometheus /metrics; 0 = off
+	Debug       bool   // NODE_ENV=development
+	PodName     string // POD_NAME → HOSTNAME → os.Hostname()
+	PodNS       string
 }
 
 type Lookup func(string) (string, bool)
@@ -108,6 +109,13 @@ func Load(env Lookup) (*Config, error) {
 	c.InternalSocketPath = orDefault(str("INTERNAL_SOCKET_PATH", ""), "rwint-"+rnd)
 	c.XtlsAPISocketPath = orDefault(str("XTLS_API_SOCKET_PATH", ""), "xtls-api-"+rnd)
 
+	if v := str("METRICS_PORT", ""); v != "" {
+		if n, ok := parseIntJS(v); ok && n > 0 && n < 65536 {
+			c.MetricsPort = n
+		} else {
+			add("METRICS_PORT", "must be a port number")
+		}
+	}
 	c.XrayBinary = orDefault(str("XRAY_BINARY", ""), "/usr/local/bin/rw-core")
 	c.Debug = str("NODE_ENV", "") == "development"
 	c.PodName = str("POD_NAME", "")

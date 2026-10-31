@@ -51,6 +51,16 @@ spec:
         protocol: TCP
       {{- end }}
       {{- end }}
+  {{- if and .Values.metrics .Values.metrics.enabled }}
+  # Prometheus scrapes (vmagent) on the metrics port
+  - fromEndpoints:
+    - matchLabels:
+        io.kubernetes.pod.namespace: {{ .Values.metrics.scraperNamespace | default "monitoring" }}
+    toPorts:
+    - ports:
+      - port: {{ .Values.metrics.port | default 9464 | quote }}
+        protocol: TCP
+  {{- end }}
   # Health checks from kubelet (host / remote-node)
   - fromEntities:
     - host

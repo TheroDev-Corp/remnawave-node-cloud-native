@@ -249,15 +249,6 @@ func (p *Plugins) ReportsCount() int {
 	return len(p.reports)
 }
 
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // Sync is PluginService.sync. It returns `accepted`.
 func (p *Plugins) Sync(ctx context.Context, plugin *struct {
 	Config json.RawMessage `json:"config"`

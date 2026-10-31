@@ -95,6 +95,9 @@ func (n *Node) StartXray(ctx context.Context, req *StartRequest, raw json.RawMes
 
 	full := GenerateAPIConfig(req.XrayConfig, n.Plugins.TorrentBlockerConfig(), n.APIListen,
 		WebhookURL(n.Cfg.InternalSocketPath, n.Cfg.InternalRestToken))
+	if n.Cfg.MetricsPort != 0 {
+		withObservatoryService(full)
+	}
 	// A new start request supersedes every earlier user operation; the same
 	// request again (crash recovery, peer catch-up) keeps the journal, which
 	// is replayed once xray is up.
