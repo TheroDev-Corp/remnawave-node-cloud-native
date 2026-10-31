@@ -190,7 +190,57 @@ func (p *Plugins) TorrentBlockerConfig() TorrentBlockerConfig {
 	for t := range p.tbIncludeTags {
 		tags[t] = true
 	}
-	return TorrentBlockerConfig{Enabled: p.tbEnabled, IncludeRuleTags: tags, RulePosition: p.tbPosition}
+	return TorrentBlockerConfig{Enabled: p.tbEnabled, IncludeRuleTags: tags, RulePosition: p.tbPosition, Suspended: p.suspendedLocked()}
+}
+
+func (p *Plugins) suspendedLocked() []string {
+	out := make([]string, 0, len(p.suspended))
+	for u := range p.suspended {
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// applySuspendedRouting puts a "suspended users → blackhole" rule first in
+// xray's live routing (or removes it), without restarting xray. Removing a
+// user from the inbounds only stops new sessions; routing is evaluated per
+// request, so this rule also cuts what still flows through a session that
+// is already open (mux, XHTTP) — the TS fork left those running.
+func (p *Plugins) applySuspendedRouting(ctx context.Context) {
+	if !p.n.IsOnline() {
+		return // the next xray start builds the rule from TorrentBlockerConfig
+	}
+	tb := p.TorrentBlockerConfig()
+	cfg := p.n.State.XrayConfig()
+	r, _ := cfg["routing"].(map[string]any)
+	if r == nil {
+		return
+	}
+	routing := make(map[string]any, len(r))
+	for k, v := range r {
+		routing[k] = v
+	}
+	old, _ := r["rules"].([]any)
+	rules := make([]any, 0, len(old)+1)
+	for _, rule := range old {
+		if m, ok := rule.(map[string]any); ok && m["ruleTag"] == suspendedRuleTag {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	routing["rules"] = withSuspendedRule(rules, tb)
+	if err := p.n.XAPI.ReplaceRouting(ctx, routing); err != nil {
+		p.n.Log.Error("[SUSPENSION] Failed to update routing for suspended users: " + err.Error())
+		return
+	}
+	next := make(map[string]any, len(cfg))
+	for k, v := range cfg {
+		next[k] = v
+	}
+	next["routing"] = routing
+	p.n.State.SetXrayConfig(next)
+	p.n.Log.Info(fmt.Sprintf("[SUSPENSION] Routing updated: %d suspended user(s) blocked, open sessions included", len(tb.Suspended)))
 }
 
 func (p *Plugins) ReportsCount() int {
@@ -479,6 +529,7 @@ func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, rep
 		}
 	}
 	_ = def
+	p.n.Log.Warn(fmt.Sprintf("[SUSPENSION] Suspending user %q for %ds from all Xray inbounds...", userID, seconds))
 	for _, tag := range p.n.State.Tags() {
 		p.n.XAPI.RemoveUser(ctx, tag, userID)
 	}
@@ -490,8 +541,12 @@ func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, rep
 		t = time.AfterFunc(time.Duration(seconds)*time.Second, func() { p.Restore(context.Background(), userID, true) })
 	}
 	p.mu.Lock()
+	_, already := p.suspended[userID]
 	p.suspended[userID] = t
 	p.mu.Unlock()
+	if !already {
+		p.applySuspendedRouting(ctx)
+	}
 	if replicate {
 		body, _ := json.Marshal(map[string]any{"userId": userID, "durationSeconds": seconds, "unbanAt": time.Now().Add(time.Duration(seconds) * time.Second).UnixMilli()})
 		p.n.recordAndReplicate("suspendUser", body)
@@ -502,13 +557,17 @@ func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, rep
 // Restore is restoreUser: re-apply the user's stored operations.
 func (p *Plugins) Restore(ctx context.Context, userID string, replicate bool) bool {
 	p.mu.Lock()
-	if t, ok := p.suspended[userID]; ok {
+	t, was := p.suspended[userID]
+	if was {
 		if t != nil {
 			t.Stop()
 		}
 		delete(p.suspended, userID)
 	}
 	p.mu.Unlock()
+	if was {
+		p.applySuspendedRouting(ctx)
+	}
 	def, ok := p.n.State.Definition(userID)
 	if !ok {
 		p.n.Log.Warn(fmt.Sprintf("[SUSPENSION] No user definition found to restore user %q. User might need panel sync.", userID))

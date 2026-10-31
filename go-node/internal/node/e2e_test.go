@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	handlercmd "github.com/xtls/xray-core/app/proxyman/command"
+	routercmd "github.com/xtls/xray-core/app/router/command"
 
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/api"
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/config"
@@ -29,6 +31,9 @@ import (
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/testpki"
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/xray"
 )
+
+// xrayFlag is the same as XRAY_BINARY: go test ./internal/node/ -args -xray=/path/to/xray
+var xrayFlag = flag.String("xray", "", "path to an xray binary for the end-to-end test (or set XRAY_BINARY)")
 
 func freePort(t *testing.T) int {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -202,6 +207,9 @@ func startBody(cfg map[string]any, h Hashes, force bool) map[string]any {
 
 func TestPanelContractEndToEnd(t *testing.T) {
 	bin := os.Getenv("XRAY_BINARY")
+	if bin == "" {
+		bin = *xrayFlag
+	}
 	if bin == "" {
 		t.Skip("set XRAY_BINARY to run the end-to-end contract test against a real xray")
 	}
@@ -527,10 +535,28 @@ func TestPanelContractEndToEnd(t *testing.T) {
 	// blockDuration 0 is permanent (plugin schema): no automatic restore.
 	plugin["plugin"].(map[string]any)["config"].(map[string]any)["torrentBlocker"].(map[string]any)["blockDuration"] = 0
 	p.must("POST", "/node/plugin/sync", "SyncCommand", plugin, true, 201)
+	// User 2's client runs VLESS with mux: open a session and use it, so the
+	// next request rides the same, already authenticated connection.
+	if got, err := socksGet(vlSocks, target); err != nil || got != payload {
+		t.Fatalf("user 2 over a mux session before the block: %d %v\n%s", got, err, clientLog())
+	}
 	n.Plugins.HandleWebhook(hook("2", "tcp:203.0.113.10:40000"))
+	// The suspended-user rule is first in xray's live routing (after the API rule).
+	lr, err := xapi.Routing.ListRule(t.Context(), &routercmd.ListRuleRequest{})
+	if err != nil || len(lr.Rules) < 2 || lr.Rules[1].RuleTag != suspendedRuleTag {
+		t.Errorf("live routing must start with the suspended-user rule: %v %v", lr, err)
+	}
+	// Removing the user alone would let this ride the open mux session; the
+	// routing rule cuts it.
+	if got, _ := socksGet(vlSocks, target); got == payload {
+		t.Error("a suspended user's open mux session must not carry new requests")
+	}
 	time.Sleep(1500 * time.Millisecond)
 	if ok, _ := userIn("VLESS", "2"); ok {
 		t.Error("blockDuration 0 must keep the user blocked")
+	}
+	if got := n.State.XrayConfig()["routing"].(map[string]any)["rules"].([]any)[1].(map[string]any)["ruleTag"]; got != suspendedRuleTag {
+		t.Errorf("stored config must carry the suspended-user rule, rules[1].ruleTag=%v", got)
 	}
 
 	// Stop: isStopped, then system stats fail again.
@@ -607,7 +633,10 @@ func startClientXray(t *testing.T, bin string, server map[string]any, hyUser, vl
 					"hysteriaSettings": map[string]any{"version": 2, "auth": hyUser.hy},
 					"tlsSettings":      map[string]any{"serverName": "node.test", "alpn": []any{"h3"}, "pinnedPeerCertSha256": hyCert.SHA256}}},
 			map[string]any{"tag": "vl", "protocol": "vless", "settings": map[string]any{"vnext": []any{map[string]any{
-				"address": "127.0.0.1", "port": port("VLESS"), "users": []any{map[string]any{"id": vlUser.vless, "encryption": "none"}}}}}},
+				"address": "127.0.0.1", "port": port("VLESS"), "users": []any{map[string]any{"id": vlUser.vless, "encryption": "none"}}}}},
+				// One long-lived connection carrying every request, like a
+				// real client's mux or XHTTP session.
+				"mux": map[string]any{"enabled": true, "concurrency": 8}},
 		},
 		"routing": map[string]any{"rules": []any{
 			map[string]any{"inboundTag": []any{"in-hy"}, "outboundTag": "hy"},

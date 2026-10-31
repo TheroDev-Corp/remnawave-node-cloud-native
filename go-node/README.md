@@ -199,6 +199,9 @@ These are fixed in the Go node. Each one can be patched in the TS fork separatel
    - Go: each node keeps a journal of user operations since its last full start; the snapshot carries it and the catching-up pod replays it after starting xray.
 7. **Replication could reorder operations.** TS fires each replication with `void fetch(…)`, so a quick `add-user` + `remove-user` can arrive reversed. Go sends through one ordered queue.
 8. **`blockDuration: 0` restored the user at once** (`setTimeout(…, 0)`), although the plugin schema documents 0 as permanent. Go blocks permanently (until a node restart or the panel re-adds the user), on standbys too. The usual value, the panel's 60-minute default, is unaffected.
+9. **A torrent-suspended user kept torrenting through their open session.** Found on dev-dedicated.
+   - TS: suspension only removes the user from the inbounds (`RemoveUser`). That stops new sessions, but a client holding a mux or XHTTP session keeps sending new requests through it without re-authenticating, so torrenting continues and the detection fires every 5 s (the webhook's deduplication window). The original Remnawave cut such sessions with nftables, which the fork removed.
+   - Go: suspension also puts `{"ruleTag": "RW_TB_SUSPENDED_USERS", "user": [<suspended ids>], "outboundTag": "RW_TB_OUTBOUND_BLOCK"}` right after the API rule, through RoutingService (no xray restart, other users untouched); restore removes it, and xray restarts rebuild it. Routing runs per request, so new requests inside an open session are dropped at once. Peer flows that were already established inside the session run until they end; xray offers no way to close them. The e2e test proves it with a mux client, and fails with the rule disabled.
 
 ## Known gaps
 

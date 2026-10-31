@@ -7,13 +7,32 @@ type TorrentBlockerConfig struct {
 	Enabled         bool
 	IncludeRuleTags map[string]bool
 	RulePosition    int
+	Suspended       []string // user ids (xray emails) currently suspended
 }
 
 const (
 	apiTag             = "REMNAWAVE_API"
 	apiInboundTag      = "REMNAWAVE_API_INBOUND"
 	torrentOutboundTag = "RW_TB_OUTBOUND_BLOCK"
+	suspendedRuleTag   = "RW_TB_SUSPENDED_USERS"
 )
+
+// withSuspendedRule puts "suspended users → torrent blackhole" right after
+// the API rule (rules[0]), ahead of everything else, so a suspended user's
+// requests are dropped even inside connections that are already open.
+func withSuspendedRule(rules []any, tb TorrentBlockerConfig) []any {
+	if !tb.Enabled || len(tb.Suspended) == 0 || len(rules) == 0 {
+		return rules
+	}
+	users := make([]any, len(tb.Suspended))
+	for i, u := range tb.Suspended {
+		users[i] = u
+	}
+	rule := map[string]any{"ruleTag": suspendedRuleTag, "user": users, "outboundTag": torrentOutboundTag}
+	out := make([]any, 0, len(rules)+1)
+	out = append(out, rules[0], rule)
+	return append(out, rules[1:]...)
+}
 
 // GenerateAPIConfig is generate-api-config.ts: take the panel's xray config
 // and add stats, the API (Handler/Stats/Routing services on a tunnel
@@ -106,6 +125,7 @@ func GenerateAPIConfig(cfg map[string]any, tb TorrentBlockerConfig, apiListen, w
 				}
 			}
 		}
+		rules = withSuspendedRule(rules, tb)
 	}
 	routing["rules"] = rules
 	out["routing"] = routing
