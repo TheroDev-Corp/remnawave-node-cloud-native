@@ -7,7 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xtls/xray-core/app/observatory"
+	obscmd "github.com/xtls/xray-core/app/observatory/command"
 	handlercmd "github.com/xtls/xray-core/app/proxyman/command"
+	routercmd "github.com/xtls/xray-core/app/router/command"
 	statscmd "github.com/xtls/xray-core/app/stats/command"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
@@ -147,19 +150,45 @@ type Traffic struct {
 	Downlink int64
 }
 
-// QueryTraffic is stats.getAll{Users,Inbounds,Outbounds}Stats(reset): a
-// QueryStats over "<kind>>>>" aggregated by the second name segment, in
-// first-seen order (the SDK's Map preserves insertion order).
-func (a *API) QueryTraffic(ctx context.Context, pattern string, reset bool) ([]Traffic, error) {
+// Stat is one raw xray counter, e.g. "inbound>>>vless>>>traffic>>>uplink".
+type Stat struct {
+	Name  string
+	Value int64
+}
+
+// QueryStats is StatsService.QueryStats: every counter whose name contains
+// pattern, read (and zeroed when reset is set) in one call.
+func (a *API) QueryStats(ctx context.Context, pattern string, reset bool) ([]Stat, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	resp, err := a.Stats.QueryStats(ctx, &statscmd.QueryStatsRequest{Pattern: pattern, Reset_: reset})
 	if err != nil {
 		return nil, err
 	}
+	out := make([]Stat, 0, len(resp.Stat))
+	for _, s := range resp.Stat {
+		out = append(out, Stat{s.Name, s.Value})
+	}
+	return out, nil
+}
+
+// QueryTraffic is stats.getAll{Users,Inbounds,Outbounds}Stats(reset): a
+// QueryStats over "<kind>>>>" aggregated by the second name segment, in
+// first-seen order (the SDK's Map preserves insertion order).
+func (a *API) QueryTraffic(ctx context.Context, pattern string, reset bool) ([]Traffic, error) {
+	stats, err := a.QueryStats(ctx, pattern, reset)
+	if err != nil {
+		return nil, err
+	}
+	return AggregateTraffic(stats), nil
+}
+
+// AggregateTraffic sums raw counters into uplink/downlink per name (the
+// second segment), in first-seen order.
+func AggregateTraffic(stats []Stat) []Traffic {
 	idx := map[string]int{}
 	var out []Traffic
-	for _, s := range resp.Stat {
+	for _, s := range stats {
 		parts := strings.Split(s.Name, ">>>")
 		name, kind := "", ""
 		if len(parts) > 1 {
@@ -181,7 +210,51 @@ func (a *API) QueryTraffic(ctx context.Context, pattern string, reset bool) ([]T
 			out[i].Downlink += s.Value
 		}
 	}
-	return out, nil
+	return out
+}
+
+// OnlineUsers is StatsService.GetAllOnlineUsers: how many users have at
+// least one live IP.
+func (a *API) OnlineUsers(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	resp, err := a.Stats.GetAllOnlineUsers(ctx, &statscmd.GetAllOnlineUsersRequest{})
+	if err != nil {
+		return 0, err
+	}
+	seen := make(map[string]struct{}, len(resp.Users))
+	for _, u := range resp.Users {
+		seen[u] = struct{}{}
+	}
+	return len(seen), nil
+}
+
+// OutboundStatus is ObservatoryService.GetOutboundStatus: the observatory's
+// (or burstObservatory's) view of every probed outbound. xray only serves
+// it when the config has an observatory and the api lists the service.
+func (a *API) OutboundStatus(ctx context.Context) ([]*observatory.OutboundStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	resp, err := a.Observatory.GetOutboundStatus(ctx, &obscmd.GetOutboundStatusRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetStatus().GetStatus(), nil
+}
+
+// BalancerInfo is RoutingService.GetBalancerInfo: the outbounds the
+// balancer's strategy currently picks from (leastLoad: the selected set,
+// leastPing: the fastest, random/roundRobin: every candidate) and the
+// manual override, if any.
+func (a *API) BalancerInfo(ctx context.Context, tag string) (targets []string, override string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	resp, err := a.Routing.GetBalancerInfo(ctx, &routercmd.GetBalancerInfoRequest{Tag: tag})
+	if err != nil {
+		return nil, "", err
+	}
+	b := resp.GetBalancer()
+	return b.GetPrincipleTarget().GetTag(), b.GetOverride().GetTarget(), nil
 }
 
 // UserOnline is stats.getUserOnlineStatus: an "online not found." error

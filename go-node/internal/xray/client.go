@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	obscmd "github.com/xtls/xray-core/app/observatory/command"
 	handlercmd "github.com/xtls/xray-core/app/proxyman/command"
 	routercmd "github.com/xtls/xray-core/app/router/command"
 	statscmd "github.com/xtls/xray-core/app/stats/command"
@@ -17,13 +18,16 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// API is the gRPC client to xray's HandlerService, StatsService and
-// RoutingService, using xray-core's own generated stubs.
+// API is the gRPC client to xray's HandlerService, StatsService,
+// RoutingService and ObservatoryService, using xray-core's own generated stubs.
 type API struct {
 	conn    *grpc.ClientConn
 	Stats   statscmd.StatsServiceClient
 	Handler handlercmd.HandlerServiceClient
 	Routing routercmd.RoutingServiceClient
+	// Observatory answers only when the config has an observatory and the
+	// api lists ObservatoryService (the node adds it for METRICS_PORT).
+	Observatory obscmd.ObservatoryServiceClient
 }
 
 // Target turns the api inbound's listen value into a gRPC target: "@name"
@@ -47,7 +51,7 @@ func Dial(listen string) (*API, error) {
 		return nil, err
 	}
 	return &API{conn: conn, Stats: statscmd.NewStatsServiceClient(conn), Handler: handlercmd.NewHandlerServiceClient(conn),
-		Routing: routercmd.NewRoutingServiceClient(conn)}, nil
+		Routing: routercmd.NewRoutingServiceClient(conn), Observatory: obscmd.NewObservatoryServiceClient(conn)}, nil
 }
 
 // ReplaceRouting swaps xray's routing rules and balancers for those in

@@ -136,6 +136,19 @@ func main() {
 		go func() { _ = hs.Serve(hl) }()
 		log.Info(fmt.Sprintf("Plain HTTP Health check server listening on port %d", cfg.HealthPort))
 	}
+	// METRICS_PORT: Prometheus text format on its own plain-HTTP port (Go-only,
+	// opt-in), away from the panel's mTLS port.
+	if cfg.MetricsPort != 0 {
+		ml, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", cfg.MetricsPort))
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		ms := &http.Server{Handler: n.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
+		extra = append(extra, ms)
+		go func() { _ = ms.Serve(ml) }()
+		log.Info(fmt.Sprintf("Prometheus metrics server listening on port %d (/metrics)", cfg.MetricsPort))
+	}
 	// The internal socket is where xray posts routing webhooks (abstract
 	// unix sockets are Linux-only).
 	if runtime.GOOS == "linux" {

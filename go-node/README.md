@@ -15,7 +15,7 @@ A drop-in replacement for the TS node in this repository. It exposes the same AP
 ## Layout
 
 ```
-main.go                 wiring: TLS server, HEALTH_PORT, internal socket, instance lock, shutdown
+main.go                 wiring: TLS server, HEALTH_PORT, METRICS_PORT, internal socket, instance lock, shutdown
 internal/config         env vars of config.schema.ts + the values init-env.sh generates
 internal/secretkey      SECRET_KEY decode, the 7 integrity checks, HKDF SNI
 internal/api            mTLS server, Nest-compatible router (drop on unknown route / bad JWT),
@@ -28,7 +28,8 @@ internal/asn            pure-Go reader for the TS node's asn-prefixes.lmdb (LMDB
 internal/hashedset      bit-exact @remnawave/hashed-set (JS int32 hex quirks included)
 internal/node           the Nest modules: xray start/stop/healthcheck + config generation + custom core,
                         handler (add/remove user(s)), stats, system info, network sampler, plugins
-                        (sync, torrent blocker, suspension, pre/post-start), geocheck, internal routes
+                        (sync, torrent blocker, suspension, pre/post-start), geocheck, internal routes;
+                        METRICS_PORT /metrics (Go-only)
 internal/testpki        panel-shaped PKI, SECRET_KEY and API JWT, for tests and the parity harness
 internal/contract       embedded JSON Schemas of libs/contract and @remnawave/node-plugins (exported from
                         their zod schemas); a zod-faithful request validator (same issues, same order,
@@ -147,6 +148,39 @@ Measured by the parity harness, both images amd64 on the same colima VM (Rosetta
 
 xray-core is the same binary in both, so the difference is the node itself: Node.js + V8 (whose heap grows with available memory) and s6 versus one Go process.
 
+## Metrics (Go-only, opt-in)
+
+`METRICS_PORT=<port>` makes the node serve Prometheus text format at `GET /metrics`, plain HTTP on its own port. It is off by default, it is not on `NODE_PORT`, and the panel sees nothing new. With it unset the node behaves exactly as described above (no tracker, same generated xray config). The Helm chart wires it as `metrics.enabled` / `metrics.port` (default 9464): every pod, leader and standbys, gets a container port named `metrics`, plus a `metrics` port on the headless Service. Scrape pods directly; the chart's other Services select only the leader.
+
+There are no per-user labels. User traffic is one sum and online users a count, so the series grow with inbounds, outbounds and balancers, not with users.
+
+| Metric | Type | Labels | Source |
+|---|---|---|---|
+| `remnanode_info` | gauge | `version`, `xray_version` | node build, `xray version` |
+| `remnanode_ha_leader`, `remnanode_ha_draining` | gauge | | Lease election (standalone: always leader) |
+| `remnanode_xray_up` | gauge | | `GetSysStats` answers |
+| `remnanode_xray_process_up`, `remnanode_xray_online` | gauge | | supervisor; node's "started and ready" flag |
+| `remnanode_xray_starts_total`, `remnanode_xray_crashes_total` | counter | | supervisor: launches, and exits without a stop request (crash, OOM kill) |
+| `remnanode_xray_uptime_seconds`, `_goroutines`, `_memory_alloc_bytes`, `_memory_sys_bytes`, `_gc_total` | gauge/counter | | `GetSysStats` |
+| `remnanode_inbound_users` | gauge | `tag` | users the node tracks per inbound |
+| `remnanode_xray_online_users` | gauge | | `GetAllOnlineUsers` (users with a live IP; xray never records 127.0.0.1) |
+| `remnanode_xray_inbound_traffic_bytes_total`, `remnanode_xray_outbound_traffic_bytes_total` | counter | `tag`, `direction` | `QueryStats` |
+| `remnanode_xray_user_traffic_bytes_total` | counter | `direction` | `QueryStats`, summed over users |
+| `remnanode_xray_observatory_alive`, `_delay_seconds`, `_last_seen_timestamp_seconds`, `_last_try_timestamp_seconds` | gauge | `outbound` | `ObservatoryService.GetOutboundStatus` |
+| `remnanode_xray_observatory_window_probes`, `_window_failures`, `_rtt_seconds{stat}` | gauge | `outbound` (+ `stat`) | burstObservatory's sampling window (what leastLoad decides on) |
+| `remnanode_xray_balancer_info` | gauge | `balancer`, `strategy`, `fallback` | config |
+| `remnanode_xray_balancer_candidates` | gauge | `balancer` | outbounds matching the selector (prefix match, like xray) |
+| `remnanode_xray_balancer_targets`, `remnanode_xray_balancer_target` | gauge | `balancer` (+ `outbound`) | `RoutingService.GetBalancerInfo`: what the strategy picks from now; 0 targets means the fallback |
+| `remnanode_xray_balancer_override` | gauge | `balancer`, `outbound` | manual `OverrideBalancerTarget` |
+| `remnanode_metrics_collector_success` | gauge | `collector` | 0 when a part of the scrape failed |
+
+How it stays out of the panel's way:
+- **Counters the panel resets.** The panel polls stats with `reset:true`, so xray's counters keep dropping to zero. With metrics on, every `QueryStats` (the panel's and the scrape's) goes through one tracker: a reset read moves the drained values into a running total, a scrape reads without reset. The exported value is that total plus the live counter, so it only goes up and the panel still gets every byte. A counter that shrinks or vanishes (xray restart, user removed) has its last value folded in first. The tracker lock spans the gRPC call, so a scrape and a panel reset can't interleave. The totals start at zero when the node process starts, which Prometheus treats as a counter reset.
+- **Observatory.** xray only answers `GetOutboundStatus` when the api lists `ObservatoryService`, and refuses to start with that service but no observatory. So the node adds the service to the generated config only when `METRICS_PORT` is set **and** the panel's config has `observatory` or `burstObservatory`. Without `METRICS_PORT` the config stays byte-identical to the TS node's (the parity harness runs that way).
+- Scrapes are serialized and time out after 10 s. Each one costs a handful of gRPC calls: `GetSysStats`, three `QueryStats`, `GetAllOnlineUsers`, `GetOutboundStatus`, and one `GetBalancerInfo` per balancer.
+
+`internal/node/metrics_e2e_test.go` checks all of this against a real xray: burstObservatory with two live relays and a dead one behind leastLoad and leastPing balancers, real downloads with panel resets between scrapes, online users (the client leaves from the host's LAN address), and an xray SIGKILL. Every scrape is parsed by a strict reader of the text format.
+
 ## Parity checklist
 
 | Area | Item | Checked by |
@@ -210,6 +244,7 @@ These are fixed in the Go node. Each one can be patched in the TS fork separatel
 
 - **No s6, no internal config socket.** xray gets its config on stdin, and Go supervises it. As with `s6-svc -o`, a crashed xray is not restarted automatically.
 - **Internal names.** `INTERNAL_REST_TOKEN`, `INTERNAL_SOCKET_PATH` and `XTLS_API_SOCKET_PATH` are generated in-process when unset, in the same formats as `init-env.sh`.
+- **`METRICS_PORT`** (Go-only, off by default) serves Prometheus metrics; see "Metrics".
 - **TLS handshake timeout** follows the HTTP header timeout (61 s), not Node's 10 s `handshakeTimeout`.
 
 License: AGPL-3.0-only, like upstream.

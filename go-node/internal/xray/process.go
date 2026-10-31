@@ -48,6 +48,11 @@ type Process struct {
 	ring   []string
 	logF   *os.File
 	logLen int64
+
+	// starts counts xray launches; crashes counts exits nobody asked for
+	// (Stop not called), for the metrics endpoint.
+	starts, crashes uint64
+	stopReq         bool
 }
 
 func NewProcess(bin, logPath string, log *slog.Logger) *Process {
@@ -76,6 +81,8 @@ func (p *Process) Start(config []byte) error {
 
 	p.mu.Lock()
 	p.cmd, p.done, p.exit, p.since = cmd, make(chan struct{}), nil, time.Now()
+	p.starts++
+	p.stopReq = false
 	done := p.done
 	p.mu.Unlock()
 
@@ -84,6 +91,9 @@ func (p *Process) Start(config []byte) error {
 		err := cmd.Wait()
 		p.mu.Lock()
 		p.exit, p.since = err, time.Now()
+		if !p.stopReq && p.cmd == cmd {
+			p.crashes++
+		}
 		p.mu.Unlock()
 		close(done)
 		if err != nil {
@@ -106,6 +116,11 @@ func (p *Process) Stop() error {
 		return nil
 	default:
 	}
+	p.mu.Lock()
+	if p.cmd == cmd {
+		p.stopReq = true
+	}
+	p.mu.Unlock()
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-done:
@@ -129,6 +144,14 @@ func (p *Process) Status() Status {
 	default:
 		return Status{Up: true, PID: p.cmd.Process.Pid}
 	}
+}
+
+// Counts reports how many times xray was started and how many of those
+// runs ended without Stop (crash, OOM kill, external signal).
+func (p *Process) Counts() (starts, crashes uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.starts, p.crashes
 }
 
 // StatusLine has s6-svstat's format, which the TS node puts into its

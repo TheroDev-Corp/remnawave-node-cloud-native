@@ -56,6 +56,11 @@ type Node struct {
 	// journal holds the user operations applied since the last full xray
 	// start, so a catching-up standby gets them too (the TS fork's snapshot
 	// carried only the start request, and those users were lost on hand-off).
+	// traffic keeps monotonic traffic totals for /metrics (nil when
+	// METRICS_PORT is off); metricsMu serializes scrapes.
+	traffic   *trafficTracker
+	metricsMu sync.Mutex
+
 	journalMu sync.Mutex
 	journal   []ha.Action
 	startMu   sync.Mutex
@@ -70,6 +75,9 @@ func New(cfg *config.Config, log *slog.Logger, st ha.State, proc *xray.Process, 
 		AssetsDir: "/usr/local/share/xray",
 	}
 	n.Plugins = newPlugins(n)
+	if cfg.MetricsPort != 0 {
+		n.traffic = newTrafficTracker()
+	}
 	return n
 }
 

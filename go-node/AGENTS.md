@@ -13,10 +13,11 @@ The TS node is the reference. **Do not modify `../src`.** When behaviour is uncl
 ## Layout
 
 ```
-main.go              wiring (TLS server, HEALTH_PORT, internal socket, HA, shutdown)
+main.go              wiring (TLS server, HEALTH_PORT, METRICS_PORT, internal socket, HA, shutdown)
 internal/api         mTLS server, Nest-compatible router, bodies, envelope, helmet/ETag, compression
 internal/contract    JSON Schemas exported from libs/contract + zod-faithful request validator
-internal/node        the Nest modules: xray start/stop, handler, stats, plugins, geocheck, peer adapter
+internal/node        the Nest modules: xray start/stop, handler, stats, plugins, geocheck, peer adapter;
+                     metrics.go + traffic.go: the Go-only METRICS_PORT /metrics
 internal/xray        xray child process + gRPC client
 internal/ha          Lease election, pod role labels, peer sync (TLS + HMAC), hand-off
 internal/asn         pure-Go reader of asn-prefixes.lmdb (lmdb-js format)
@@ -75,6 +76,7 @@ Must pass before any push: `go vet ./...` and `go test ./...` (with `XRAY_BINARY
 - Log lines mirror the TS node's wording where they exist.
 - Tests next to the code; cross-language checks go through `testdata/node/fixture.mjs`.
 - No cgo. The binary is static and runs on `scratch`.
+- Metrics (`METRICS_PORT`, README "Metrics") are Go-only and opt-in. With the port unset, nothing the panel sees may change, including the generated xray config. Stats reads go through `Node.queryTraffic`, never `XAPI.QueryTraffic` directly, so the panel's `reset:true` doesn't break the exported counters. No per-user labels.
 
 ## Running an agent from the console
 

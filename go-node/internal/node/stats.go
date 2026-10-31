@@ -131,7 +131,7 @@ func (n *Node) registerStats(rt *api.Router) {
 		if !validated(r, "GetUsersStatsCommand", &req) {
 			return
 		}
-		ts, err := n.XAPI.QueryTraffic(r.R.Context(), "user>>>", req.Reset)
+		ts, err := n.queryTraffic(r.R.Context(), "user>>>", req.Reset)
 		if err != nil {
 			fail(r, errUsersStats, "")
 			return
@@ -154,7 +154,7 @@ func (n *Node) registerStats(rt *api.Router) {
 			if !validated(r, command, &req) {
 				return
 			}
-			ts, err := n.XAPI.QueryTraffic(r.R.Context(), pattern+">>>"+req.Tag+">>>", req.Reset)
+			ts, err := n.queryTraffic(r.R.Context(), pattern+">>>"+req.Tag+">>>", req.Reset)
 			if err != nil || len(ts) == 0 {
 				fail(r, e, "")
 				return
@@ -172,7 +172,7 @@ func (n *Node) registerStats(rt *api.Router) {
 		if !validated(r, "GetAllInboundsStatsCommand", &req) {
 			return
 		}
-		ts, err := n.XAPI.QueryTraffic(r.R.Context(), "inbound>>>", req.Reset)
+		ts, err := n.queryTraffic(r.R.Context(), "inbound>>>", req.Reset)
 		if err != nil {
 			fail(r, errInboundsStats, "")
 			return
@@ -186,7 +186,7 @@ func (n *Node) registerStats(rt *api.Router) {
 		if !validated(r, "GetAllOutboundsStatsCommand", &req) {
 			return
 		}
-		ts, err := n.XAPI.QueryTraffic(r.R.Context(), "outbound>>>", req.Reset)
+		ts, err := n.queryTraffic(r.R.Context(), "outbound>>>", req.Reset)
 		if err != nil {
 			fail(r, errInboundsStats, "") // the TS node reports the inbounds error here too
 			return
@@ -200,8 +200,8 @@ func (n *Node) registerStats(rt *api.Router) {
 		if !validated(r, "GetCombinedStatsCommand", &req) {
 			return
 		}
-		in, err1 := n.XAPI.QueryTraffic(r.R.Context(), "inbound>>>", req.Reset)
-		out, err2 := n.XAPI.QueryTraffic(r.R.Context(), "outbound>>>", req.Reset)
+		in, err1 := n.queryTraffic(r.R.Context(), "inbound>>>", req.Reset)
+		out, err2 := n.queryTraffic(r.R.Context(), "outbound>>>", req.Reset)
 		if err1 != nil || err2 != nil {
 			fail(r, errCombined, "")
 			return

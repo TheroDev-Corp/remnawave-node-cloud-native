@@ -21,7 +21,7 @@ func TestDefaultsAndGeneratedInternals(t *testing.T) {
 		!strings.HasPrefix(c.XtlsAPISocketPath, "xtls-api-") || c.InternalSocketPath[6:] != c.XtlsAPISocketPath[9:] {
 		t.Fatalf("generated internals don't follow init-env.sh: %q %q %q", c.InternalRestToken, c.InternalSocketPath, c.XtlsAPISocketPath)
 	}
-	if c.PodName != "pod-a" || c.XrayBinary != "/usr/local/bin/rw-core" {
+	if c.PodName != "pod-a" || c.XrayBinary != "/usr/local/bin/rw-core" || c.MetricsPort != 0 {
 		t.Fatalf("%+v", c)
 	}
 	if c.TrustedProxies != "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" {
@@ -39,6 +39,7 @@ func TestValidation(t *testing.T) {
 		{"no SECRET_KEY", map[string]string{"NODE_PORT": "1"}, "SECRET_KEY"},
 		{"bad boolean", map[string]string{"NODE_PORT": "1", "SECRET_KEY": "x", "SNI_VERIFICATION": "yes"}, "SNI_VERIFICATION"},
 		{"bad health port", map[string]string{"NODE_PORT": "1", "SECRET_KEY": "x", "HEALTH_PORT": "abc"}, "HEALTH_PORT"},
+		{"bad metrics port", map[string]string{"NODE_PORT": "1", "SECRET_KEY": "x", "METRICS_PORT": "70000"}, "METRICS_PORT"},
 	} {
 		if _, err := Load(envOf(c.env)); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v", c.name, err)

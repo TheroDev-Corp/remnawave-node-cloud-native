@@ -122,3 +122,40 @@ func TestCrashIsDetectedAndNotRestarted(t *testing.T) {
 		t.Error("xray must not be restarted automatically (s6 -o semantics)")
 	}
 }
+
+// TestCountsStartsAndCrashes runs a stand-in binary (a shell script that
+// sleeps), so it needs no xray: a Stop is not a crash, a SIGKILL from
+// outside is.
+func TestCountsStartsAndCrashes(t *testing.T) {
+	bin := t.TempDir() + "/fake-xray"
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcess(bin, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if s, c := p.Counts(); s != 0 || c != 0 {
+		t.Fatalf("fresh: %d %d", s, c)
+	}
+	if err := p.Start(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Start(nil); err != nil { // restart = stop + start
+		t.Fatal(err)
+	}
+	_ = p.Stop()
+	if s, c := p.Counts(); s != 2 || c != 0 {
+		t.Fatalf("after two starts and a stop: starts %d crashes %d", s, c)
+	}
+	if err := p.Start(nil); err != nil {
+		t.Fatal(err)
+	}
+	pid := p.Status().PID
+	proc, _ := os.FindProcess(pid)
+	_ = proc.Kill()
+	deadline := time.Now().Add(5 * time.Second)
+	for p.Status().Up && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s, c := p.Counts(); s != 3 || c != 1 {
+		t.Fatalf("after SIGKILL: starts %d crashes %d", s, c)
+	}
+}

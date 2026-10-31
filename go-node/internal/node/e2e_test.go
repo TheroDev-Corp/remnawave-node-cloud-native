@@ -610,7 +610,9 @@ func startPayloadServer(t *testing.T, n int) string {
 // startClientXray runs xray as a client with two SOCKS inbounds: one via
 // Hysteria 2 as hyUser (pinning the node's self-signed cert), one via VLESS
 // as vlUser. It returns the two SOCKS addresses.
-func startClientXray(t *testing.T, bin string, server map[string]any, hyUser, vlUser testUser) (string, string, func() string) {
+// An optional sendThrough is the local address the VLESS connection
+// leaves from (xray leaves 127.0.0.1 out of its online map).
+func startClientXray(t *testing.T, bin string, server map[string]any, hyUser, vlUser testUser, sendThrough ...string) (string, string, func() string) {
 	port := func(tag string) any {
 		for _, in := range server["inbounds"].([]any) {
 			if m := in.(map[string]any); m["tag"] == tag {
@@ -642,6 +644,9 @@ func startClientXray(t *testing.T, bin string, server map[string]any, hyUser, vl
 			map[string]any{"inboundTag": []any{"in-hy"}, "outboundTag": "hy"},
 			map[string]any{"inboundTag": []any{"in-vl"}, "outboundTag": "vl"},
 		}},
+	}
+	if len(sendThrough) > 0 {
+		cfg["outbounds"].([]any)[1].(map[string]any)["sendThrough"] = sendThrough[0]
 	}
 	raw, _ := json.Marshal(cfg)
 	cmd := exec.Command(bin, "run", "-config", "stdin:", "-format", "json")
