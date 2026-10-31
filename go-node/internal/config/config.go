@@ -27,6 +27,9 @@ type Config struct {
 	K8sLeaderElection   bool
 	K8sLeaseName        string
 	PeerHeadlessService string
+	// PeerLegacyAuth also accepts the TS fork's X-Secret-Key from peers, for
+	// a rolling migration from TS pods. The Go node never sends it.
+	PeerLegacyAuth      bool
 	TrustedProxies      string
 	DisableInstanceLock bool
 
@@ -98,6 +101,7 @@ func Load(env Lookup) (*Config, error) {
 	c.DisableInstanceLock = boolean("DISABLE_INSTANCE_LOCK", "false")
 	c.K8sLeaseName = str("K8S_LEASE_NAME", "remnanode-leader")
 	c.PeerHeadlessService = str("PEER_HEADLESS_SERVICE", "")
+	c.PeerLegacyAuth = boolean("PEER_ACCEPT_LEGACY_SECRET_HEADER", "false")
 	c.TrustedProxies = str("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16")
 
 	rnd := randomAlnum(10)

@@ -82,6 +82,13 @@ func (s *State) XrayConfig() map[string]any {
 	return s.xrayConfig
 }
 
+// SetXrayConfig is internalService.setXrayConfig (peer catch-up).
+func (s *State) SetXrayConfig(cfg map[string]any) {
+	s.mu.Lock()
+	s.xrayConfig = cfg
+	s.mu.Unlock()
+}
+
 func (s *State) SetLastStart(body json.RawMessage) {
 	s.mu.Lock()
 	s.lastStart = body

@@ -25,9 +25,9 @@ import (
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/xray"
 )
 
-// ASNResolver resolves an AS number to its prefixes (asn-lmdb module).
-// Nil means no ASN data: asList entries resolve to nothing, as when the TS
-// node's lookup misses.
+// ASNResolver resolves an AS number to its prefixes (asn-lmdb module,
+// implemented by internal/asn). Nil means no ASN data: asList entries
+// resolve to nothing, as when the TS node's lookup misses.
 type ASNResolver interface {
 	Prefixes(asn uint32) (v4, v6 []string, ok bool)
 }
@@ -344,6 +344,7 @@ func (p *Plugins) resolveSharedLists(cfg pluginConfig) map[string][]string {
 					p.n.Log.Warn(fmt.Sprintf("[PLUGIN] ASN %d not found", asn))
 					continue
 				}
+				p.n.Log.Info(fmt.Sprintf("[PLUGIN] ASN %d resolved: %d IPv4, %d IPv6", asn, len(v4), len(v6)))
 				prefixes = append(append(prefixes, v4...), v6...)
 			}
 			out[l.Name] = prefixes
@@ -486,7 +487,8 @@ func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, rep
 	p.suspended[userID] = t
 	p.mu.Unlock()
 	if replicate {
-		p.n.Repl.Replicate("suspendUser", map[string]any{"userId": userID, "durationSeconds": seconds, "unbanAt": time.Now().Add(time.Duration(seconds) * time.Second).UnixMilli()})
+		body, _ := json.Marshal(map[string]any{"userId": userID, "durationSeconds": seconds, "unbanAt": time.Now().Add(time.Duration(seconds) * time.Second).UnixMilli()})
+		p.n.recordAndReplicate("suspendUser", body)
 	}
 	return true
 }
@@ -509,7 +511,8 @@ func (p *Plugins) Restore(ctx context.Context, userID string, replicate bool) bo
 		p.n.XAPI.AddUser(ctx, op)
 	}
 	if replicate {
-		p.n.Repl.Replicate("restoreUser", map[string]any{"userId": userID})
+		body, _ := json.Marshal(map[string]any{"userId": userID})
+		p.n.recordAndReplicate("restoreUser", body)
 	}
 	return true
 }
@@ -657,6 +660,7 @@ func (n *Node) registerPlugins(rt *api.Router) {
 		if !validated(r, "SyncCommand", &req) {
 			return
 		}
+		n.lastPluginSync.Store(append(json.RawMessage(nil), r.Body...))
 		accepted := n.Plugins.Sync(r.R.Context(), req.Plugin)
 		// Fork fix: plugin sync is replicated so standbys get the same
 		// torrent-blocker rules (the TS fork never sent it to peers).

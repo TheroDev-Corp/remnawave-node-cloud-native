@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/api"
+	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/asn"
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/config"
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/ha"
 	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/health"
@@ -62,7 +63,39 @@ func main() {
 	}
 	stopNet := make(chan struct{})
 	defer close(stopNet)
-	n := node.New(cfg, log, ha.Standalone{ID: cfg.PodName}, proc, xapi, listen, node.StartNetStats(stopNet))
+	// HA: Lease election when enabled (else always leader), peer sync when a
+	// headless Service is configured.
+	var state ha.State = ha.Standalone{ID: cfg.PodName}
+	var elector *ha.Elector
+	ns := ha.Namespace()
+	if cfg.K8sLeaderElection {
+		elector = ha.NewElector(log, ha.NewK8s(), cfg.K8sLeaseName, cfg.PodName, ns)
+		state = elector
+	} else {
+		log.Info("K8s Leader Election disabled, running as standalone Leader.")
+	}
+	n := node.New(cfg, log, state, proc, xapi, listen, node.StartNetStats(stopNet))
+	if _, err := os.Stat(asn.DefaultPath); err != nil {
+		log.Warn(asn.DefaultPath + " not found — ASN lookup disabled")
+	} else if db, err := asn.Open(asn.DefaultPath); err != nil {
+		log.Error("Failed to open ASN LMDB database: " + err.Error())
+	} else {
+		defer db.Close()
+		n.Plugins.ASN = db
+		log.Info("ASN LMDB database opened successfully")
+	}
+	var peers *ha.PeerSync
+	if cfg.PeerHeadlessService != "" {
+		peerPort := cfg.HealthPort
+		if peerPort == 0 {
+			peerPort = 3000
+		}
+		peers = ha.NewPeerSync(log, n, elector, cfg.PeerHeadlessService, ns, peerPort,
+			ha.NewPeerAuth(cfg.SecretKey, cfg.PeerLegacyAuth), &ha.PeerTLS{Cert: mat.NodeCert, CA: mat.CAPool})
+		n.Repl = peers
+	} else {
+		log.Info("PEER_HEADLESS_SERVICE is not configured. Standalone mode active.")
+	}
 	n.RefreshXrayVersion(ctx)
 	xver := ""
 	if v := n.XrayVersion(); v != nil {
@@ -87,9 +120,20 @@ func main() {
 
 	var extra []*http.Server
 	if cfg.HealthPort != 0 {
-		hs := &http.Server{Addr: fmt.Sprintf("0.0.0.0:%d", cfg.HealthPort), Handler: health.PlainServer(n.HA, proc), ReadHeaderTimeout: 10 * time.Second}
+		mux := health.PlainServer(n.HA, proc)
+		hl, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", cfg.HealthPort))
+		if err != nil {
+			log.Error(err.Error())
+			os.Exit(1)
+		}
+		if peers != nil {
+			// Peers talk TLS (node certificate) on the probe port.
+			peers.Register(mux)
+			hl = (&ha.PeerTLS{Cert: mat.NodeCert, CA: mat.CAPool}).MuxListener(hl)
+		}
+		hs := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 		extra = append(extra, hs)
-		go func() { _ = hs.ListenAndServe() }()
+		go func() { _ = hs.Serve(hl) }()
 		log.Info(fmt.Sprintf("Plain HTTP Health check server listening on port %d", cfg.HealthPort))
 	}
 	// The internal socket is where xray posts routing webhooks (abstract
@@ -109,10 +153,23 @@ func main() {
 		}
 	}
 
+	if elector != nil {
+		elector.Start(ctx)
+	}
+	if peers != nil {
+		peers.Start(ctx)
+	}
 	log.Info(fmt.Sprintf("Remnawave Node v%s (Go) · xray %s · listening on :%d", node.Version, xver, cfg.NodePort))
 
 	<-ctx.Done()
 	log.Info("Shutting down...")
+	if peers != nil {
+		peers.Shutdown()
+	}
+	if elector != nil {
+		// Release the lease and keep serving 5 s so the new leader takes over.
+		elector.Shutdown(context.Background())
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
@@ -124,6 +181,8 @@ func main() {
 
 // apiListen is the xray api inbound address: the abstract socket the TS
 // node uses, or a loopback port on hosts without abstract sockets.
+var _ ha.Local = (*node.Node)(nil)
+
 func apiListen(cfg *config.Config) string {
 	if runtime.GOOS == "linux" {
 		return "@" + cfg.XtlsAPISocketPath

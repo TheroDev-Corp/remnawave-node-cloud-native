@@ -95,6 +95,13 @@ func (n *Node) StartXray(ctx context.Context, req *StartRequest, raw json.RawMes
 
 	full := GenerateAPIConfig(req.XrayConfig, n.Plugins.TorrentBlockerConfig(), n.APIListen,
 		WebhookURL(n.Cfg.InternalSocketPath, n.Cfg.InternalRestToken))
+	// A new start request supersedes every earlier user operation; the same
+	// request again (crash recovery, peer catch-up) keeps the journal, which
+	// is replayed once xray is up.
+	replay := bytes.Equal(bytes.TrimSpace(raw), bytes.TrimSpace(n.State.LastStart()))
+	if !replay {
+		n.resetJournal()
+	}
 	n.State.SetLastStart(raw)
 	n.State.ExtractUsers(req.Internals.Hashes, full)
 
@@ -126,6 +133,9 @@ func (n *Node) StartXray(ctx context.Context, req *StartRequest, raw json.RawMes
 
 	n.online.Store(true)
 	n.State.SetLastStart(raw)
+	if replay {
+		n.replayJournal(ctx)
+	}
 	n.RefreshXrayVersion(ctx)
 	n.Log.Info(fmt.Sprintf("✔ XRay Core v%s is up and running.", deref(n.XrayVersion())))
 	n.Plugins.RunPostStart(req.Internals.Metadata)

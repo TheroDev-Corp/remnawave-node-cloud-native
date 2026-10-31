@@ -1,8 +1,14 @@
 package node
 
 import (
+	"encoding/json"
+	"io"
+	"log/slog"
 	"net/netip"
 	"testing"
+
+	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/config"
+	"github.com/TheroDev-Corp/remnawave-node-cloud-native/go-node/internal/ha"
 )
 
 func TestGenerateAPIConfig(t *testing.T) {
@@ -121,5 +127,29 @@ func TestNeedRestart(t *testing.T) {
 	s.RemoveUserFromInbound("A", "x") // last user gone: the inbound disappears
 	if r, _ := s.NeedRestart(h); !r {
 		t.Error("emptied inbound → restart on next push, like the TS node")
+	}
+}
+
+type fakeASN map[uint32][2][]string
+
+func (f fakeASN) Prefixes(asn uint32) ([]string, []string, bool) {
+	e, ok := f[asn]
+	return e[0], e[1], ok
+}
+
+func TestASListIgnore(t *testing.T) {
+	n := New(&config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), ha.Standalone{}, nil, nil, "", nil)
+	n.Plugins.ASN = fakeASN{13335: {{"1.1.1.0/24", "104.16.0.0/13"}, {"2606:4700::/32"}}}
+	var cfg pluginConfig
+	_ = json.Unmarshal([]byte(`{"sharedLists":[{"type":"asList","name":"ext:cf","items":[13335,64496]}]}`), &cfg)
+	shared := n.Plugins.resolveSharedLists(cfg)
+	if got := shared["ext:cf"]; len(got) != 3 {
+		t.Fatalf("asList ext:cf = %v (unknown ASNs are skipped)", got)
+	}
+	m := newIPMatcher(resolveIPList([]string{"ext:cf"}, shared, func(string, ...any) {}))
+	for ip, want := range map[string]bool{"1.1.1.7": true, "104.20.1.1": true, "2606:4700::1": true, "8.8.8.8": false} {
+		if got := m.has(netip.MustParseAddr(ip)); got != want {
+			t.Errorf("%s ignored=%v, want %v", ip, got, want)
+		}
 	}
 }

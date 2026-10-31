@@ -35,6 +35,15 @@ RUN apk add --no-cache curl ca-certificates \
     && chmod 1777 /rootfs/tmp
 
 
+FROM alpine:3.21 AS asn
+ARG ASN_LMDB_URL=https://github.com/remnawave/asn-index/releases/latest/download/asn-prefixes.lmdb.zst
+RUN apk add --no-cache zstd
+ADD ${ASN_LMDB_URL} /tmp/asn-prefixes.lmdb.zst
+RUN mkdir -p /out/asn \
+    && zstd -d /tmp/asn-prefixes.lmdb.zst -o /out/asn/asn-prefixes.lmdb \
+    && chmod 644 /out/asn/asn-prefixes.lmdb
+
+
 FROM alpine:3.21 AS geocheck
 ARG GEOCHECK_VERSION=0.3.0
 ARG GEOCHECK_RELEASE_URL=https://github.com/remnawave/geocheck/releases/download
@@ -58,6 +67,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 
 COPY --from=xray /rootfs/ /
 COPY --from=geocheck /out/geocheck /usr/local/bin/geocheck
+COPY --from=asn /out/asn /usr/local/share/asn
 COPY --from=build /out/node /usr/local/bin/remnawave-node
 
 

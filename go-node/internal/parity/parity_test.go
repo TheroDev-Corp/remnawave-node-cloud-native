@@ -783,6 +783,19 @@ func (h *harness) resources(when string) {
 		if err == nil {
 			h.note("resources %s, %s: %s", when, n.label, out)
 		}
+		// Per process: the node itself vs xray (RSS in KiB from ps).
+		if top, err := dockerRun("top", n.name, "-eo", "rss,comm"); err == nil {
+			var parts []string
+			for _, l := range strings.Split(top, "\n")[1:] {
+				f := strings.Fields(l)
+				if len(f) >= 2 {
+					if kb, err := strconv.Atoi(f[0]); err == nil && kb > 4096 {
+						parts = append(parts, fmt.Sprintf("%s %.1f MiB", strings.Join(f[1:], " "), float64(kb)/1024))
+					}
+				}
+			}
+			h.note("rss %s, %s: %s", when, n.label, strings.Join(parts, ", "))
+		}
 	}
 }
 

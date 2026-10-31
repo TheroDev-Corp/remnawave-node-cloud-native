@@ -49,7 +49,16 @@ type Node struct {
 	xrayVersion atomic.Pointer[string]
 	online      atomic.Bool
 	starting    atomic.Bool
-	startMu     sync.Mutex
+	// lastPluginSync is the last /node/plugin/sync body, handed to a
+	// catching-up standby in the peer snapshot.
+	lastPluginSync atomic.Value
+
+	// journal holds the user operations applied since the last full xray
+	// start, so a catching-up standby gets them too (the TS fork's snapshot
+	// carried only the start request, and those users were lost on hand-off).
+	journalMu sync.Mutex
+	journal   []ha.Action
+	startMu   sync.Mutex
 }
 
 // New builds a node with its state; call Register to add the routes.

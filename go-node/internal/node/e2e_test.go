@@ -300,6 +300,24 @@ func TestPanelContractEndToEnd(t *testing.T) {
 		t.Fatal("push after incremental add-user must not restart xray")
 	}
 
+	// xray dies and is restarted from the stored start request (crash
+	// recovery / peer catch-up): the user added since must survive (fork fix).
+	_ = proc.Stop()
+	n.StartFrom(t.Context(), n.LastStart())
+	if !n.IsXrayReady() {
+		t.Fatalf("restart from the stored request failed: %s", strings.Join(proc.Tail(10), "\n"))
+	}
+	for _, tag := range managedTags {
+		r, err := xapi.Handler.GetInboundUsers(t.Context(), &handlercmd.GetInboundUserRequest{Tag: tag, Email: u4.id})
+		if err != nil || len(r.Users) != 1 || r.Users[0].Email != u4.id {
+			t.Errorf("user %s lost from %s after xray restarted from the stored request: %v %v", u4.id, tag, r, err)
+		}
+	}
+	if got, _ := n.State.InboundHash("VLESS"); got != hashes2.Inbounds[0].Hash {
+		t.Errorf("hash after journal replay %s, want %s", got, hashes2.Inbounds[0].Hash)
+	}
+	pid = proc.Status().PID
+
 	// Bulk add (zstd), with ss22 key base64(ssPassword) and cipherType 0 for ss.
 	u5 := newUser(5)
 	addMany := map[string]any{

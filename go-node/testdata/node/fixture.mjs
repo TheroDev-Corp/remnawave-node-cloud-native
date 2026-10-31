@@ -88,6 +88,15 @@ switch (req.op) {
         out = req.headers.map((h) => new Negotiator({ headers: { 'accept-encoding': h } }).encoding(['br', 'gzip', 'deflate', 'identity'], ['br', 'gzip']) ?? '');
         break;
     }
+    case 'asnDump': {
+        // Every entry of the ASN database, as the TS node's lmdb-js reads it.
+        const { open } = require('lmdb');
+        const db = open({ path: req.path, encoding: 'msgpack', readOnly: true });
+        out = [];
+        for (const { key, value } of db.getRange()) out.push([key, value.ipv4, value.ipv6]);
+        db.close();
+        break;
+    }
     case 'semverGte': {
         const semver = require('semver');
         out = req.versions.map((v) => semver.valid(v) !== null && !semver.lt(v, req.min));

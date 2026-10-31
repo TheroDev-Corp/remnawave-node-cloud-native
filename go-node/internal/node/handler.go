@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -224,7 +223,7 @@ func (n *Node) registerHandler(rt *api.Router) {
 			return
 		}
 		res := n.AddUser(r.R.Context(), &req)
-		n.Repl.Replicate("addUser", json.RawMessage(r.Body))
+		n.recordAndReplicate("addUser", r.Body)
 		r.OK(res)
 	})
 	rt.Handle(http.MethodPost, "/node/handler/remove-user", api.AuthJWT, func(r *api.Request) {
@@ -238,7 +237,7 @@ func (n *Node) registerHandler(rt *api.Router) {
 			return
 		}
 		res := n.RemoveUser(r.R.Context(), req.Username, req.HashData.VlessUUID)
-		n.Repl.Replicate("removeUser", json.RawMessage(r.Body))
+		n.recordAndReplicate("removeUser", r.Body)
 		r.OK(res)
 	})
 	rt.Handle(http.MethodPost, "/node/handler/add-users", api.AuthJWT, func(r *api.Request) {
@@ -247,7 +246,7 @@ func (n *Node) registerHandler(rt *api.Router) {
 			return
 		}
 		res := n.AddUsers(r.R.Context(), &req)
-		n.Repl.Replicate("addUsers", json.RawMessage(r.Body))
+		n.recordAndReplicate("addUsers", r.Body)
 		r.OK(res)
 	})
 	rt.Handle(http.MethodPost, "/node/handler/remove-users", api.AuthJWT, func(r *api.Request) {
@@ -261,7 +260,7 @@ func (n *Node) registerHandler(rt *api.Router) {
 			return
 		}
 		res := n.RemoveUsers(r.R.Context(), req.Users)
-		n.Repl.Replicate("removeUsers", json.RawMessage(r.Body))
+		n.recordAndReplicate("removeUsers", r.Body)
 		r.OK(res)
 	})
 	// The fork removed nftables/sockdestroy: both answer success and do nothing.
