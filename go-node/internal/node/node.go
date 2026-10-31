@@ -20,7 +20,7 @@ import (
 // Version is the node version reported to the panel. It must be valid
 // semver ≥ 2.7.0 (start-node.processor.ts gates on it); by default it is
 // the TS fork release this port tracks.
-var Version = "3.4.5-HA"
+var Version = "3.5.0-HA"
 
 // Replicator forwards state-changing calls to standby pods (milestone 4).
 type Replicator interface {
