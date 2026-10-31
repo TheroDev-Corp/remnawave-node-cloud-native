@@ -42,6 +42,12 @@ switch (req.op) {
         }
         break;
     }
+    case 'pluginSchema': {
+        // @remnawave/node-plugins' NodePluginSchema (input side, with defaults).
+        const { NodePluginSchema } = require('@remnawave/node-plugins');
+        out = NodePluginSchema.toJSONSchema({ unrepresentable: 'any', io: 'input' });
+        break;
+    }
     case 'check': {
         // Validate a JSON value against a command's schema, like the panel's
         // contract types (and the TS node's ZodValidationPipe) would.
@@ -51,6 +57,24 @@ switch (req.op) {
         out = r.success
             ? { ok: true, unknown: unknownKeys(req.value, r.data) }
             : { ok: false, issues: r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) };
+        break;
+    }
+    case 'checkMany': {
+        // Batch of {command, kind, value}; same result shape as 'check'.
+        const cmds = await contract();
+        out = req.items.map(({ command, kind, value }) => {
+            const cmd = cmds[command];
+            const schema = kind === 'request' ? cmd.RequestSchema : cmd.ResponseSchema;
+            const r = schema.safeParse(value);
+            return r.success
+                ? { ok: true, unknown: unknownKeys(value, r.data) }
+                : { ok: false, issues: r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) };
+        });
+        break;
+    }
+    case 'semverGte': {
+        const semver = require('semver');
+        out = req.versions.map((v) => semver.valid(v) !== null && !semver.lt(v, req.min));
         break;
     }
     case 'deriveSni': {
@@ -86,6 +110,16 @@ switch (req.op) {
     case 'hashedSet': {
         const { HashedSet } = require('@remnawave/hashed-set');
         out = req.sets.map((values) => new HashedSet(values).hash64String);
+        break;
+    }
+    case 'hashedSetOps': {
+        // Replays add/delete sequences, returning the hash after each step.
+        const { HashedSet } = require('@remnawave/hashed-set');
+        const s = new HashedSet();
+        out = req.ops.map(([op, v]) => {
+            op === 'add' ? s.add(v) : s.delete(v);
+            return s.hash64String;
+        });
         break;
     }
     case 'objectHash': {

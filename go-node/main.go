@@ -54,16 +54,20 @@ func main() {
 	defer stop()
 
 	proc := xray.NewProcess(cfg.XrayBinary, "/var/log/xray/current", log)
-	_, xver, verr := xray.Version(ctx, cfg.XrayBinary)
-	if verr != nil {
-		log.Warn("Failed to read xray core version", "err", verr)
-	}
-	xapi, err := xray.Dial(apiListen(cfg))
+	listen := apiListen(cfg)
+	xapi, err := xray.Dial(listen)
 	if err != nil {
 		log.Error(err.Error())
 		os.Exit(1)
 	}
-	n := &node.Node{Cfg: cfg, Log: log, HA: ha.Standalone{ID: cfg.PodName}, Proc: proc, XAPI: xapi, XVer: xver}
+	stopNet := make(chan struct{})
+	defer close(stopNet)
+	n := node.New(cfg, log, ha.Standalone{ID: cfg.PodName}, proc, xapi, listen, node.StartNetStats(stopNet))
+	n.RefreshXrayVersion(ctx)
+	xver := ""
+	if v := n.XrayVersion(); v != nil {
+		xver = *v
+	}
 
 	rt := api.NewRouter(log, api.NewJWTVerifier(mat.JWTKey), cfg.InternalRestToken)
 	n.Register(rt)
@@ -115,7 +119,7 @@ func main() {
 	for _, s := range extra {
 		_ = s.Shutdown(shutdownCtx)
 	}
-	_ = proc.Stop()
+	n.StopXray(false, false)
 }
 
 // apiListen is the xray api inbound address: the abstract socket the TS

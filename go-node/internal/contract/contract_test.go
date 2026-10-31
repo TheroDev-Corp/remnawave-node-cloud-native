@@ -16,9 +16,9 @@ import (
 // TestGoldenSchemasAreCurrent fails when libs/contract changed (e.g. after
 // an upstream sync) without regenerating the golden file:
 //
-//	echo '{"op":"schemas"}' | node --import ./testdata/node/ts-hooks.mjs testdata/node/fixture.mjs > testdata/contract/schemas.json
+//	echo '{"op":"schemas"}' | node --import ./testdata/node/ts-hooks.mjs testdata/node/fixture.mjs > internal/contract/schemas.json
 func TestGoldenSchemasAreCurrent(t *testing.T) {
-	golden, err := os.ReadFile(filepath.Join(nodefixture.Root(), "testdata", "contract", "schemas.json"))
+	golden, err := os.ReadFile(filepath.Join(nodefixture.Root(), "internal", "contract", "schemas.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,14 +31,14 @@ func TestGoldenSchemasAreCurrent(t *testing.T) {
 	}
 	wantB, _ := json.Marshal(want)
 	if !bytes.Equal(got, wantB) {
-		t.Fatal("libs/contract changed: regenerate testdata/contract/schemas.json and review the Go structs")
+		t.Fatal("libs/contract changed: regenerate internal/contract/schemas.json and review the Go structs")
 	}
 }
 
 // TestGoldenCoversTheContract pins the command list: 25 commands, of which
 // the stock panel calls 20.
 func TestGoldenCoversTheContract(t *testing.T) {
-	golden, _ := os.ReadFile(filepath.Join(nodefixture.Root(), "testdata", "contract", "schemas.json"))
+	golden, _ := os.ReadFile(filepath.Join(nodefixture.Root(), "internal", "contract", "schemas.json"))
 	var m map[string]struct {
 		URL string `json:"url"`
 	}
