@@ -42,8 +42,14 @@ data:
     }
 
     echo "=== Starting Geodata Download (Mode: $MODE) ==="
-    download_file "https://github.com/kutovoys/ru_gov_zapret/releases/latest/download/zapret.dat" "zapret.dat"
-    download_file "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat" "geoip.dat"
-    download_file "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat" "geosite.dat"
+    {{- range .Values.geodata.files }}
+    {{- if not (regexMatch "^[A-Za-z0-9._-]+$" .file) }}
+    {{- fail (printf "geodata.files: file %q must be a plain file name" .file) }}
+    {{- end }}
+    {{- if or (contains "'" .url) (not (hasPrefix "https://" .url)) }}
+    {{- fail (printf "geodata.files: url %q must start with https:// and contain no quotes" .url) }}
+    {{- end }}
+    download_file {{ .url | squote }} {{ .file | squote }}
+    {{- end }}
     echo "=== Finished ==="
 {{- end }}

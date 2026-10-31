@@ -75,6 +75,10 @@ func main() {
 		log.Info("K8s Leader Election disabled, running as standalone Leader.")
 	}
 	n := node.New(cfg, log, state, proc, xapi, listen, node.StartNetStats(stopNet))
+	if cfg.XrayBinary == config.DefaultXrayBinary {
+		// The image's rw-core links to the switchable /var/lib/rw-core/current.
+		n.EnsureCoreLink()
+	}
 	if _, err := os.Stat(asn.DefaultPath); err != nil {
 		log.Warn(asn.DefaultPath + " not found — ASN lookup disabled")
 	} else if db, err := asn.Open(asn.DefaultPath); err != nil {

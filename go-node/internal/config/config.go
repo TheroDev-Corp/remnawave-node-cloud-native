@@ -43,6 +43,10 @@ type Config struct {
 
 type Lookup func(string) (string, bool)
 
+// DefaultXrayBinary is the core path of the TS node and of the image: a fixed
+// link to the switchable /var/lib/rw-core/current.
+const DefaultXrayBinary = "/usr/local/bin/rw-core"
+
 var intPrefix = regexp.MustCompile(`^\s*([+-]?\d+)`)
 
 // parseIntJS is parseInt(s, 10).
@@ -116,7 +120,7 @@ func Load(env Lookup) (*Config, error) {
 			add("METRICS_PORT", "must be a port number")
 		}
 	}
-	c.XrayBinary = orDefault(str("XRAY_BINARY", ""), "/usr/local/bin/rw-core")
+	c.XrayBinary = orDefault(str("XRAY_BINARY", ""), DefaultXrayBinary)
 	c.Debug = str("NODE_ENV", "") == "development"
 	c.PodName = str("POD_NAME", "")
 	if c.PodName == "" {

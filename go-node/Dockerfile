@@ -27,12 +27,14 @@ RUN apk add --no-cache curl ca-certificates \
     && curl -fsSL -o /tmp/xray.dgst "${BASE}/${ARCHIVE}.dgst" \
     && echo "$(awk '/^SHA2-256=/ { print $2 }' /tmp/xray.dgst)  /tmp/${ARCHIVE}" | sha256sum -c - \
     && unzip -q "/tmp/${ARCHIVE}" -d /tmp/xray \
-    && mkdir -p /rootfs/usr/local/bin /rootfs/usr/local/share/xray /rootfs/var/log/xray /rootfs/tmp /rootfs/etc/ssl/certs \
+    && mkdir -p /rootfs/usr/local/bin /rootfs/usr/local/share/xray /rootfs/var/log/xray /rootfs/var/lib/rw-core /rootfs/tmp /rootfs/etc/ssl/certs \
     && install -m 755 /tmp/xray/xray /rootfs/usr/local/bin/xray \
-    && ln -s /usr/local/bin/xray /rootfs/usr/local/bin/rw-core \
+    && ln -s /usr/local/bin/xray /rootfs/var/lib/rw-core/current \
+    && ln -s /var/lib/rw-core/current /rootfs/usr/local/bin/rw-core \
     && install -m 644 /tmp/xray/geoip.dat /tmp/xray/geosite.dat /rootfs/usr/local/share/xray/ \
     && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ \
-    && chmod 1777 /rootfs/tmp
+    && chmod 1777 /rootfs/tmp \
+    && chown -h 65534:65534 /rootfs/var/lib/rw-core /rootfs/var/lib/rw-core/current /rootfs/usr/local/share/xray /rootfs/var/log/xray
 
 
 FROM alpine:3.21 AS asn
@@ -70,5 +72,11 @@ COPY --from=geocheck /out/geocheck /usr/local/bin/geocheck
 COPY --from=asn /out/asn /usr/local/share/asn
 COPY --from=build /out/node /usr/local/bin/remnawave-node
 
+# Runs as nobody. Writable for it: /var/lib/rw-core (core switch for a custom
+# core), /usr/local/share/xray (panel geodata.assets), /var/log/xray, /tmp.
+# Binaries and the ASN db stay root-owned. Inbounds below 1024 need the
+# net.ipv4.ip_unprivileged_port_start sysctl (Docker sets it to 0; the Helm
+# chart sets it in the pod).
+USER 65534:65534
 
 ENTRYPOINT ["/usr/local/bin/remnawave-node"]

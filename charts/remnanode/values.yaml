@@ -20,6 +20,17 @@ geodata:
   enabled: false
   storageClassName: ''
   size: 512Mi
+  # Files downloaded into /data (XRAY_LOCATION_ASSET) by the init container and refreshed
+  # every 12 hours by the sidecar. xray reads all assets from /data then, so keep
+  # geoip.dat and geosite.dat in the list. Reference extra files in routing as
+  # "ext:<file>:<list>", e.g. "ext:zapret.dat:zapret".
+  files:
+    - url: https://github.com/kutovoys/ru_gov_zapret/releases/latest/download/zapret.dat
+      file: zapret.dat
+    - url: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat
+      file: geoip.dat
+    - url: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat
+      file: geosite.dat
 
 # Settings for the camouflage/fallback website
 website:
@@ -79,6 +90,27 @@ metrics:
   podAnnotations: true
   # Namespace allowed to scrape when ciliumNetworkPolicy is enabled.
   scraperNamespace: monitoring
+
+# Pod security. The Go image (3.5.2-HA and later) runs as nobody (65534) on its own;
+# the TS image (3.4.x) runs as root. The first two settings apply to every pod and are
+# harmless for root pods:
+#   - fsGroup keeps mounted volumes readable for nobody (a TLS secret with defaultMode
+#     0400 becomes 0440 root:65534; the geodata PVC gets the group too);
+#   - net.ipv4.ip_unprivileged_port_start lets xray bind inbounds below 1024 without
+#     root. It is a namespaced, safe sysctl, and is not set with hostNetwork.
+podSecurity:
+  fsGroup: 65534
+  # Lowest port an unprivileged process may bind; 0 lets xray listen on 443 etc.
+  # Set to null to leave the sysctl out.
+  unprivilegedPortStart: 0
+  # Override the image's user. Leave null to use the image's user. 0 runs as root:
+  # needed with hostNetwork and inbounds below 1024 (the sysctl isn't available there).
+  runAsUser: null
+  runAsGroup: null
+  # Hardening on top, Go image only (a root image is refused by the kubelet):
+  # runAsNonRoot, all capabilities dropped, no privilege escalation, RuntimeDefault seccomp.
+  # Becomes the default once no node runs the TS image.
+  runAsNonRoot: false
 
 # Cilium Network Policy for cluster environments using Cilium CNI
 ciliumNetworkPolicy:

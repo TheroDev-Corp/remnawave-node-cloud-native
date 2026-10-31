@@ -148,6 +148,60 @@ Measured by the parity harness, both images amd64 on the same colima VM (Rosetta
 
 xray-core is the same binary in both, so the difference is the node itself: Node.js + V8 (whose heap grows with available memory) and s6 versus one Go process.
 
+## Runs as nobody
+
+The image runs as `nobody` (`USER 65534:65534`); no part of the node needs root. Audit:
+- **No root needed:**
+  - the panel API, HEALTH_PORT and METRICS_PORT;
+  - the abstract unix sockets;
+  - the Lease, pod labels and peer sync;
+  - the xray child, the `/proc` stats, the ASN mmap and geocheck;
+  - the torrent block (a routing rule over gRPC).
+- **No-ops:** nftables/sockdestroy are no-ops in the fork.
+- **Writable for nobody in the image:**
+
+| Path | Used for |
+|---|---|
+| `/var/lib/rw-core` | `current`, the core link; `xray-custom` and its marker for a custom core (`geodata.core`) |
+| `/usr/local/share/xray` | panel `geodata.assets`, unless `XRAY_LOCATION_ASSET` points elsewhere |
+| `/var/log/xray` | `current`, the xray log copy |
+| `/tmp` | 1777 |
+
+Binaries and the ASN db stay root-owned.
+
+How the core path works:
+- `/usr/local/bin/rw-core` (the exec path and process name, as in the TS node) is a fixed link to `/var/lib/rw-core/current`, which points at the bundled `/usr/local/bin/xray` or at a custom core.
+- The TS node keeps these files in `/usr/local/bin`; they moved here so the switch works without root.
+- At startup the node points a missing or dangling `current` back at the bundled core, for example when `/var/lib/rw-core` is an emptyDir.
+- Panel `geodata.assets` go to `XRAY_LOCATION_ASSET` when it is set, as in the TS node (geodata.service.ts). Earlier Go builds always wrote to `/usr/local/share/xray`.
+
+What xray needs:
+- Inbounds below 1024 need the sysctl `net.ipv4.ip_unprivileged_port_start`. Docker sets it to 0 for containers, and the chart sets it in the pod. With `hostNetwork` it can't be set, so such ports need `podSecurity.runAsUser: 0`.
+- Features that need `CAP_NET_ADMIN` (sockopt `mark`/`tproxy`, `tun` inbounds) don't work as nobody. None of the gitops profiles use them.
+
+What the chart (`charts/remnanode`) sets:
+- **Every pod:**
+  - `fsGroup: 65534`, so a TLS secret with `defaultMode` 0400 becomes `0440 root:65534`, and the geodata PVC is readable;
+  - the port sysctl, unless hostNetwork.
+  
+  Both are harmless for root pods (the TS image).
+- `podSecurity.runAsUser`/`runAsGroup` override the image's user (`0` runs as root).
+- `podSecurity.runAsNonRoot` adds hardening: runAsNonRoot, drop ALL capabilities, no privilege escalation, RuntimeDefault seccomp. It is off while TS nodes remain.
+- `geodata.files` sets the URLs the geodata downloader fetches into `/data`.
+
+Tested in kind (local-path storage, as in k3s), image built from this Dockerfile:
+
+**HA suite** (`internal/kindtest`, `-kind-nonroot`):
+- passes under traffic: graceful and hard failover with 0 failed downloads, xray crash 5 (3 s), node SIGKILL 1 (2.2 s), rolling update 1 (5.2 s);
+- the same image as root (`-kind-root`) gives identical numbers.
+
+**With panel 3.4.7 and chart defaults:**
+- node and xray at uid 65534 with CapEff 0;
+- Shadowsocks on 443 and Trojan TLS on 8443 (cert from a 0400 secret);
+- the geodata PVC: files left by an earlier root run are read, and the sidecar replaces them;
+- a routing rule on `ext:zapret.dat:…` served from `/data`;
+- panel `geodata.assets` written to `/data` as 65534.
+
 ## Metrics (Go-only, opt-in)
 
 `METRICS_PORT=<port>` makes the node serve Prometheus text format at `GET /metrics`, plain HTTP on its own port. It is off by default, it is not on `NODE_PORT`, and the panel sees nothing new. With it unset the node behaves exactly as described above (no tracker, same generated xray config). The Helm chart wires it as `metrics.enabled` / `metrics.port` (default 9464). Every pod, leader and standbys, gets a container port named `metrics` and `prometheus.io/scrape`, `/port`, `/path` annotations (`metrics.podAnnotations`, on by default), so an annotation-based scraper such as vmagent's `kubernetes-pods` job picks up each pod without extra config. The headless Service also lists a `metrics` port but carries no scrape annotation, so pods aren't scraped twice. The chart's other Services select only the leader.

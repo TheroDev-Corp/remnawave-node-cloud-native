@@ -172,6 +172,36 @@ func (n *Node) restoreStockCore() {
 	n.Log.Warn("No core configured, rolled back to the bundled one.")
 }
 
+// assetsDir is ASSETS_DIR in geodata.service.ts: XRAY_LOCATION_ASSET (the
+// directory xray itself reads assets from) or the bundled one.
+func assetsDir() string {
+	if d := os.Getenv("XRAY_LOCATION_ASSET"); d != "" {
+		if abs, err := filepath.Abs(d); err == nil {
+			return abs
+		}
+		return d
+	}
+	return "/usr/local/share/xray"
+}
+
+// EnsureCoreLink points CoreLink at the bundled core when it is missing or
+// dangling (a fresh emptyDir on /var/lib/rw-core, or a custom core that is
+// gone), so xray never starts through a broken link. A working link, custom
+// core included, is left alone.
+func (n *Node) EnsureCoreLink() {
+	if _, err := os.Stat(n.CoreLink); err == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(n.CoreLink), 0o755); err == nil {
+		err = n.pointCoreLinkAt(n.CoreStock)
+		if err == nil {
+			_ = os.Remove(filepath.Join(filepath.Dir(n.CoreCustom), ".rw-core.json"))
+			return
+		}
+	}
+	n.Log.Warn("Core link " + n.CoreLink + " is missing and can't be created; xray may fail to start.")
+}
+
 func (n *Node) pointCoreLinkAt(target string) error {
 	tmp := n.CoreLink + ".tmp"
 	_ = os.Remove(tmp)

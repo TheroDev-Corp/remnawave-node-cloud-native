@@ -43,7 +43,10 @@ type Node struct {
 	Plugins   *Plugins
 	Repl      Replicator
 
-	// CoreLink etc. are the custom-core paths (core-loader.service.ts).
+	// CoreLink etc. are the custom-core paths (core-loader.service.ts). The TS
+	// node keeps them in /usr/local/bin; here they live in /var/lib/rw-core so
+	// the node can switch cores as an unprivileged user. The image keeps
+	// /usr/local/bin/rw-core as a fixed link to CoreLink.
 	CoreLink, CoreStock, CoreCustom, AssetsDir string
 
 	xrayVersion atomic.Pointer[string]
@@ -71,8 +74,8 @@ func New(cfg *config.Config, log *slog.Logger, st ha.State, proc *xray.Process, 
 	n := &Node{
 		Cfg: cfg, Log: log, HA: st, Proc: proc, XAPI: api, APIListen: apiListen, Net: net,
 		State: NewState(), Repl: noReplication{},
-		CoreLink: "/usr/local/bin/rw-core", CoreStock: "/usr/local/bin/xray", CoreCustom: "/usr/local/bin/xray-custom",
-		AssetsDir: "/usr/local/share/xray",
+		CoreLink: "/var/lib/rw-core/current", CoreStock: "/usr/local/bin/xray", CoreCustom: "/var/lib/rw-core/xray-custom",
+		AssetsDir: assetsDir(),
 	}
 	n.Plugins = newPlugins(n)
 	if cfg.MetricsPort != 0 {

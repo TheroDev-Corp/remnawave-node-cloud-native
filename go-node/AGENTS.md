@@ -76,6 +76,7 @@ Must pass before any push: `go vet ./...` and `go test ./...` (with `XRAY_BINARY
 - Log lines mirror the TS node's wording where they exist.
 - Tests next to the code; cross-language checks go through `testdata/node/fixture.mjs`.
 - No cgo. The binary is static and runs on `scratch`.
+- The image runs as nobody (65534). The node may write only to `/var/lib/rw-core`, the assets dir (`XRAY_LOCATION_ASSET` or `/usr/local/share/xray`), `/var/log/xray` and `/tmp`. Anything that needs root or a capability is a regression (README "Runs as nobody").
 - Metrics (`METRICS_PORT`, README "Metrics") are Go-only and opt-in. With the port unset, nothing the panel sees may change, including the generated xray config. Stats reads go through `Node.queryTraffic`, never `XAPI.QueryTraffic` directly, so the panel's `reset:true` doesn't break the exported counters. No per-user labels.
 
 ## Running an agent from the console
