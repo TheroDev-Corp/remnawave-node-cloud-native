@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"crypto/tls"
 	"encoding/json"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/klauspost/compress/zstd"
 
@@ -136,25 +138,51 @@ func TestEnvelopeStatusAndHeaders(t *testing.T) {
 	}
 }
 
-func TestGzipResponses(t *testing.T) {
+func TestCompressedResponses(t *testing.T) {
 	e := start(t, false)
-	resp, body, err := e.do(t, "GET", "/node/big", reqOpts{ae: "gzip, compress, deflate, br"})
-	if err != nil {
-		t.Fatal(err)
+	for ae, want := range map[string]string{"gzip, compress, deflate, br": "br", "gzip": "gzip", "deflate": "deflate", "identity": "", "": ""} {
+		resp, body, err := e.do(t, "GET", "/node/big", reqOpts{ae: ae})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.Header.Get("Content-Encoding"); got != want {
+			t.Errorf("Accept-Encoding %q: Content-Encoding %q, want %q", ae, got, want)
+			continue
+		}
+		var rd io.Reader = bytes.NewReader(body)
+		switch want {
+		case "br":
+			rd = brotli.NewReader(rd)
+		case "gzip":
+			rd, _ = gzip.NewReader(rd)
+		case "deflate":
+			rd, _ = zlib.NewReader(rd)
+		}
+		plain, _ := io.ReadAll(rd)
+		if !bytes.HasPrefix(plain, []byte(`{"response":"xxxx`)) {
+			t.Errorf("%q: decoded body = %.40s", ae, plain)
+		}
 	}
-	if resp.Header.Get("Content-Encoding") != "gzip" {
-		t.Fatalf("responses ≥ 1 KiB are gzipped for axios, got %q", resp.Header.Get("Content-Encoding"))
+	if resp, _, _ := e.do(t, "HEAD", "/node/big", reqOpts{ae: "gzip, br"}); resp.Header.Get("Content-Encoding") != "" {
+		t.Error("HEAD responses are never compressed (compression: 'HEAD request')")
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+}
+
+// TestNegotiateEncoding compares the Go port with the negotiator package
+// compression() uses.
+func TestNegotiateEncoding(t *testing.T) {
+	headers := []string{
+		"gzip, compress, deflate, br", "gzip, deflate", "br;q=0.5, gzip", "gzip;q=0.5, br;q=0.5", "*", "*;q=0",
+		"identity", "identity;q=0", "identity;q=0, *;q=0", "deflate, gzip;q=1.0, *;q=0.5", "x-gzip", "GZIP",
+		"br;q=0", "gzip;q=0, deflate;q=0, br;q=0", "", ",", "compress", "gzip;q=abc", "gzip;q=.8, deflate;q=0.8",
+		"deflate;q=1, br;q=0.9, gzip;q=0.9", "*;q=0.1, gzip;q=0", "zstd, br", "gzip ; q=0.7 , br ; q=0.7",
 	}
-	plain, _ := io.ReadAll(zr)
-	if !bytes.HasPrefix(plain, []byte(`{"response":"xxxx`)) {
-		t.Errorf("decompressed = %.40s", plain)
-	}
-	if resp, _, _ := e.do(t, "GET", "/node/big", reqOpts{}); resp.Header.Get("Content-Encoding") != "" {
-		t.Error("no gzip without Accept-Encoding")
+	var want []string
+	nodefixture.Run(t, map[string]any{"op": "negotiate", "headers": headers}, &want)
+	for i, h := range headers {
+		if got := NegotiateEncoding(h); got != want[i] {
+			t.Errorf("%q: Go %q, negotiator %q", h, got, want[i])
+		}
 	}
 }
 

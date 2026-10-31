@@ -44,6 +44,7 @@ type Process struct {
 	cmd    *exec.Cmd
 	done   chan struct{}
 	exit   error
+	since  time.Time // last state change (start or exit), for StatusLine
 	ring   []string
 	logF   *os.File
 	logLen int64
@@ -74,7 +75,7 @@ func (p *Process) Start(config []byte) error {
 	}
 
 	p.mu.Lock()
-	p.cmd, p.done, p.exit = cmd, make(chan struct{}), nil
+	p.cmd, p.done, p.exit, p.since = cmd, make(chan struct{}), nil, time.Now()
 	done := p.done
 	p.mu.Unlock()
 
@@ -82,7 +83,7 @@ func (p *Process) Start(config []byte) error {
 	go func() {
 		err := cmd.Wait()
 		p.mu.Lock()
-		p.exit = err
+		p.exit, p.since = err, time.Now()
 		p.mu.Unlock()
 		close(done)
 		if err != nil {
@@ -130,22 +131,30 @@ func (p *Process) Status() Status {
 	}
 }
 
-// StatusLine is a human-readable status, like s6-svstat's output.
+// StatusLine has s6-svstat's format, which the TS node puts into its
+// "process is not running anymore (s6: …)" error: "up (pid 42) 5 seconds"
+// or "down (exitcode 2) 0 seconds, ready 0 seconds".
 func (p *Process) StatusLine() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	switch {
-	case p.cmd == nil:
-		return "down (never started)"
-	case p.exit != nil:
-		return "down (" + p.exit.Error() + ")"
+	if p.cmd == nil {
+		return "down (exitcode 0) 0 seconds, ready 0 seconds"
 	}
+	secs := int(time.Since(p.since).Seconds())
 	select {
 	case <-p.done:
-		return "down (exited)"
 	default:
-		return fmt.Sprintf("up (pid %d)", p.cmd.Process.Pid)
+		return fmt.Sprintf("up (pid %d) %d seconds", p.cmd.Process.Pid, secs)
 	}
+	how := "exitcode 0"
+	if ps := p.cmd.ProcessState; ps != nil {
+		if code := ps.ExitCode(); code >= 0 {
+			how = fmt.Sprintf("exitcode %d", code)
+		} else if sig := signalName(ps); sig != "" {
+			how = "signal " + sig
+		}
+	}
+	return fmt.Sprintf("down (%s) %d seconds, ready %d seconds", how, secs, secs)
 }
 
 // Tail returns the last n xray log lines.

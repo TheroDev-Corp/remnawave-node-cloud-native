@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os/exec"
 	"strings"
@@ -48,12 +49,15 @@ func (n *Node) geocheck(ctx context.Context, ip, iface string) (map[string]any, 
 	args = append(args, "--json", "--svg-base64", "--quiet")
 	ctx, cancel := context.WithTimeout(ctx, geocheckTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, geocheckBin, args...).Output()
+	var stderr strings.Builder
+	cmd := exec.CommandContext(ctx, geocheckBin, args...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("Geocheck via %s exceeded %dms and was killed.", target, geocheckTimeout.Milliseconds())
 	}
 	if err != nil {
-		return nil, fmt.Errorf("Geocheck via %s failed: %v", target, err)
+		return nil, fmt.Errorf("Geocheck via %s failed: %s", target, execFileMessage(geocheckBin, args, stderr.String(), err))
 	}
 	var report map[string]any
 	if err := json.Unmarshal(out, &report); err != nil {
@@ -64,4 +68,14 @@ func (n *Node) geocheck(ctx context.Context, ip, iface string) (map[string]any, 
 		return nil, fmt.Errorf("Geocheck via %s failed: geocheck report carries no image", target)
 	}
 	return report, nil
+}
+
+// execFileMessage is the message of the error Node's child_process.execFile
+// rejects with: "spawn <file> ENOENT" when the binary is missing, otherwise
+// "Command failed: <file> <args…>\n<stderr>".
+func execFileMessage(file string, args []string, stderr string, err error) string {
+	if errors.Is(err, fs.ErrNotExist) {
+		return "spawn " + file + " ENOENT"
+	}
+	return "Command failed: " + strings.Join(append([]string{file}, args...), " ") + "\n" + stderr
 }

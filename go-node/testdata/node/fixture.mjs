@@ -72,6 +72,22 @@ switch (req.op) {
         });
         break;
     }
+    case 'zodIssues': {
+        // Batch of {command, value}: the request issues exactly as the TS
+        // node's ZodValidationPipe puts them in a 400 body.
+        const cmds = await contract();
+        out = req.items.map(({ command, value }) => {
+            const r = cmds[command].RequestSchema.safeParse(value);
+            return r.success ? [] : JSON.parse(JSON.stringify(r.error.issues));
+        });
+        break;
+    }
+    case 'negotiate': {
+        // compression@1.8.1's choice for each Accept-Encoding header.
+        const Negotiator = require(require.resolve('negotiator', { paths: [require.resolve('compression')] }));
+        out = req.headers.map((h) => new Negotiator({ headers: { 'accept-encoding': h } }).encoding(['br', 'gzip', 'deflate', 'identity'], ['br', 'gzip']) ?? '');
+        break;
+    }
     case 'semverGte': {
         const semver = require('semver');
         out = req.versions.map((v) => semver.valid(v) !== null && !semver.lt(v, req.min));

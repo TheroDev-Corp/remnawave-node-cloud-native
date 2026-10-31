@@ -112,15 +112,11 @@ func (n *Node) RegisterInternal(rt *api.Router) {
 // command's zod-derived schema; it answers 400 itself on failure.
 func validated(r *api.Request, command string, v any) bool {
 	if issues := validateRequest(command, r.Body); len(issues) > 0 {
-		out := make([]map[string]any, 0, len(issues))
-		for _, i := range issues {
-			out = append(out, map[string]any{"path": i.Path, "message": i.Message})
-		}
-		r.ValidationError(out)
+		r.ValidationError(issues)
 		return false
 	}
 	if err := r.Decode(v); err != nil {
-		r.ValidationError([]map[string]any{{"path": "", "message": err.Error()}})
+		r.ValidationError([]map[string]any{{"code": "custom", "path": []any{}, "message": err.Error()}})
 		return false
 	}
 	return true

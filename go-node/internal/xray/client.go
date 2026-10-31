@@ -71,7 +71,7 @@ func WaitReady(ctx context.Context, api *API, p *Process) error {
 		}
 		st := p.Status()
 		if !st.Up || (startPID != 0 && st.PID != startPID) {
-			return fmt.Errorf("%w: Xray Core process is not running anymore (%s)", ErrProcessDown, p.StatusLine())
+			return fmt.Errorf("%w: Xray Core process is not running anymore (s6: %s)", ErrProcessDown, p.StatusLine())
 		}
 		if attempt == 30 {
 			break
