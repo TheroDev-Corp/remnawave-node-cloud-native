@@ -150,7 +150,7 @@ xray-core is the same binary in both, so the difference is the node itself: Node
 
 ## Metrics (Go-only, opt-in)
 
-`METRICS_PORT=<port>` makes the node serve Prometheus text format at `GET /metrics`, plain HTTP on its own port. It is off by default, it is not on `NODE_PORT`, and the panel sees nothing new. With it unset the node behaves exactly as described above (no tracker, same generated xray config). The Helm chart wires it as `metrics.enabled` / `metrics.port` (default 9464): every pod, leader and standbys, gets a container port named `metrics`, plus a `metrics` port on the headless Service. Scrape pods directly; the chart's other Services select only the leader.
+`METRICS_PORT=<port>` makes the node serve Prometheus text format at `GET /metrics`, plain HTTP on its own port. It is off by default, it is not on `NODE_PORT`, and the panel sees nothing new. With it unset the node behaves exactly as described above (no tracker, same generated xray config). The Helm chart wires it as `metrics.enabled` / `metrics.port` (default 9464). Every pod, leader and standbys, gets a container port named `metrics` and `prometheus.io/scrape`, `/port`, `/path` annotations (`metrics.podAnnotations`, on by default), so an annotation-based scraper such as vmagent's `kubernetes-pods` job picks up each pod without extra config. The headless Service also lists a `metrics` port but carries no scrape annotation, so pods aren't scraped twice. The chart's other Services select only the leader.
 
 There are no per-user labels. User traffic is one sum and online users a count, so the series grow with inbounds, outbounds and balancers, not with users.
 

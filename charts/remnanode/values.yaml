@@ -68,14 +68,15 @@ peerSync:
 # Prometheus metrics (Go node 3.5.0-HA and later; the TS image ignores METRICS_PORT).
 # The node serves plain-HTTP /metrics on its own port: xray traffic per inbound and
 # outbound, online users, xray up/restarts, HA role, observatory and balancer state.
-# Every pod (leader and standbys) exposes a container port named "metrics"; scrape
-# pods directly (role: pod), since the chart's Services only select the leader.
+# Every pod (leader and standbys) exposes a container port named "metrics" and, by
+# default, prometheus.io/* annotations, so annotation-based scrapers (vmagent's
+# kubernetes-pods job) pick up each pod with no extra scrape config.
 metrics:
   enabled: false
   port: 9464
   path: /metrics
-  # Add prometheus.io/* pod annotations for annotation-based scrapers.
-  podAnnotations: false
+  # prometheus.io/scrape, /port, /path pod annotations.
+  podAnnotations: true
   # Namespace allowed to scrape when ciliumNetworkPolicy is enabled.
   scraperNamespace: monitoring
 
