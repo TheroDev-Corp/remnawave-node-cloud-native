@@ -80,6 +80,24 @@ metrics:
   # Namespace allowed to scrape when ciliumNetworkPolicy is enabled.
   scraperNamespace: monitoring
 
+# Run the node pod as an unprivileged user (nobody, 65534) instead of root.
+# Go node only (3.5.0-HA and later): the TS image (3.4.x) needs root, keep it off there.
+# What changes when enabled:
+#   - runAsNonRoot, all capabilities dropped, no privilege escalation, RuntimeDefault seccomp;
+#   - fsGroup makes the geodata PVC and the TLS secret readable for the node;
+#   - /var/log/xray becomes an emptyDir so the xray log file can still be written;
+#   - xray may bind inbound ports below 1024 through the namespaced sysctl
+#     net.ipv4.ip_unprivileged_port_start (not with hostNetwork: there ports < 1024 fail).
+# Not available as nobody: a custom xray core (geodata.core) or geodata.assets pushed by
+# the panel, since both are written into the image (/usr/local/bin, /usr/local/share/xray).
+podSecurity:
+  runAsNonRoot: false
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  # Lowest port an unprivileged process may bind; 0 lets xray listen on 443 etc.
+  unprivilegedPortStart: 0
+
 # Cilium Network Policy for cluster environments using Cilium CNI
 ciliumNetworkPolicy:
   enabled: false

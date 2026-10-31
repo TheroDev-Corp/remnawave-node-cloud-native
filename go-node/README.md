@@ -148,6 +148,23 @@ Measured by the parity harness, both images amd64 on the same colima VM (Rosetta
 
 xray-core is the same binary in both, so the difference is the node itself: Node.js + V8 (whose heap grows with available memory) and s6 versus one Go process.
 
+## Running as nobody (chart, opt-in)
+
+The image needs no root: the node and xray only bind sockets, read the image and the mounted secrets, and write `/var/log/xray/current` (failures there are ignored). `podSecurity.runAsNonRoot: true` in `charts/remnanode` runs the pod as `nobody` (65534:65534):
+- the node container gets `runAsNonRoot`, drops all capabilities, has no privilege escalation and uses the `RuntimeDefault` seccomp profile;
+- `fsGroup` 65534 lets the node read the TLS secret: with `defaultMode` 0400 the kubelet makes the files `0440 root:65534`. The geodata PVC gets the same group;
+- `/var/log/xray` becomes an emptyDir;
+- the namespaced sysctl `net.ipv4.ip_unprivileged_port_start` (default 0) lets xray listen on ports below 1024. This sysctl isn't set with `hostNetwork`, where such ports fail.
+
+It stays off by default because the TS image (3.4.x) needs root.
+
+As nobody, the node can't install a custom xray core (`geodata.core`) or download `geodata.assets` from the panel, because both write into the image (`/usr/local/bin`, `/usr/local/share/xray`). The node logs an error and keeps the bundled core.
+
+Tested in kind with panel 3.4.7 and two replicas:
+- node and xray run as 65534 with no capabilities;
+- the HA election and hand-off work;
+- user traffic passes through a Shadowsocks inbound on 443 and a Trojan TLS inbound on 8443, which uses the cert from a 0400 secret.
+
 ## Metrics (Go-only, opt-in)
 
 `METRICS_PORT=<port>` makes the node serve Prometheus text format at `GET /metrics`, plain HTTP on its own port. It is off by default, it is not on `NODE_PORT`, and the panel sees nothing new. With it unset the node behaves exactly as described above (no tracker, same generated xray config). The Helm chart wires it as `metrics.enabled` / `metrics.port` (default 9464). Every pod, leader and standbys, gets a container port named `metrics` and `prometheus.io/scrape`, `/port`, `/path` annotations (`metrics.podAnnotations`, on by default), so an annotation-based scraper such as vmagent's `kubernetes-pods` job picks up each pod without extra config. The headless Service also lists a `metrics` port but carries no scrape annotation, so pods aren't scraped twice. The chart's other Services select only the leader.

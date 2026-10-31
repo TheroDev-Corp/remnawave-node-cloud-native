@@ -44,6 +44,22 @@ spec:
       {{- end }}
       hostNetwork: {{ if .Values.node.hostNetwork }}true{{ else }}false{{ end }}
       dnsPolicy: {{ if .Values.node.hostNetwork }}ClusterFirstWithHostNet{{ else }}ClusterFirst{{ end }}
+      {{- $nonRoot := and .Values.podSecurity .Values.podSecurity.runAsNonRoot }}
+      {{- if $nonRoot }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.podSecurity.runAsUser | default 65534 }}
+        runAsGroup: {{ .Values.podSecurity.runAsGroup | default 65534 }}
+        fsGroup: {{ .Values.podSecurity.fsGroup | default 65534 }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+        {{- if not .Values.node.hostNetwork }}
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: {{ .Values.podSecurity.unprivilegedPortStart | default 0 | quote }}
+        {{- end }}
+      {{- end }}
 
       {{- if .Values.geodata.enabled }}
       initContainers:
@@ -184,6 +200,16 @@ spec:
               mountPath: {{ .Values.node.tlsMount.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if $nonRoot }}
+            - name: xray-log
+              mountPath: /var/log/xray
+            {{- end }}
+          {{- if $nonRoot }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- end }}
           resources:
             {{- toYaml .Values.node.resources | nindent 12 }}
         {{- if .Values.geodata.enabled }}
@@ -233,6 +259,12 @@ spec:
           configMap:
             name: {{ include "remnanode.fullname" . }}-downloader-script
             defaultMode: 0755
+        {{- end }}
+        {{- if $nonRoot }}
+        # xray log file (/var/log/xray/current): the image's directory is root-owned.
+        - name: xray-log
+          emptyDir:
+            sizeLimit: 32Mi
         {{- end }}
         {{- if .Values.node.tlsMount.enabled }}
         - name: tls-cert
