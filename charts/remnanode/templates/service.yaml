@@ -95,4 +95,11 @@ spec:
       port: {{ default 3000 .Values.node.healthPort }}
       targetPort: {{ default 3000 .Values.node.healthPort }}
       protocol: TCP
+    {{- if and .Values.metrics .Values.metrics.enabled }}
+    # Every pod, leader and standbys, for endpoint-based scrapers.
+    - name: metrics
+      port: {{ .Values.metrics.port | default 9464 }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
 {{- end }}

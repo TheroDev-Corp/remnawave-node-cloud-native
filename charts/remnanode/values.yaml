@@ -65,6 +65,20 @@ leaderElection:
 peerSync:
   enabled: true
 
+# Prometheus metrics (Go node 3.5.0-HA and later; the TS image ignores METRICS_PORT).
+# The node serves plain-HTTP /metrics on its own port: xray traffic per inbound and
+# outbound, online users, xray up/restarts, HA role, observatory and balancer state.
+# Every pod (leader and standbys) exposes a container port named "metrics"; scrape
+# pods directly (role: pod), since the chart's Services only select the leader.
+metrics:
+  enabled: false
+  port: 9464
+  path: /metrics
+  # Add prometheus.io/* pod annotations for annotation-based scrapers.
+  podAnnotations: false
+  # Namespace allowed to scrape when ciliumNetworkPolicy is enabled.
+  scraperNamespace: monitoring
+
 # Cilium Network Policy for cluster environments using Cilium CNI
 ciliumNetworkPolicy:
   enabled: false

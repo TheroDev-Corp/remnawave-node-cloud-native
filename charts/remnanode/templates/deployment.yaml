@@ -30,6 +30,11 @@ spec:
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- if and .Values.metrics .Values.metrics.enabled .Values.metrics.podAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | default 9464 | quote }}
+        prometheus.io/path: {{ .Values.metrics.path | default "/metrics" | quote }}
+        {{- end }}
     spec:
       {{- if .Values.leaderElection.enabled }}
       serviceAccountName: {{ include "remnanode.fullname" . }}-sa
@@ -92,6 +97,10 @@ spec:
                 secretKeyRef:
                   name: {{ coalesce .Values.node.existingSecret (printf "%s-secrets" (include "remnanode.fullname" .)) }}
                   key: SECRET_KEY
+            {{- if and .Values.metrics .Values.metrics.enabled }}
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | default 9464 | quote }}
+            {{- end }}
             {{- if .Values.geodata.enabled }}
             - name: XRAY_LOCATION_ASSET
               value: /data
@@ -105,6 +114,11 @@ spec:
               {{- if .Values.node.hostNetwork }}
               hostPort: {{ .Values.node.apiPort }}
               {{- end }}
+            {{- if and .Values.metrics .Values.metrics.enabled }}
+            - containerPort: {{ .Values.metrics.port | default 9464 }}
+              name: metrics
+              protocol: TCP
+            {{- end }}
             {{- range .Values.inbounds }}
             {{- $proto := lower (default "tcp" .protocol) }}
             {{- if or (eq $proto "both") (eq $proto "tcp/udp") (eq $proto "udp/tcp") }}
