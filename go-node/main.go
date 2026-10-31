@@ -91,7 +91,7 @@ func main() {
 			peerPort = 3000
 		}
 		peers = ha.NewPeerSync(log, n, elector, cfg.PeerHeadlessService, ns, peerPort,
-			ha.NewPeerAuth(cfg.SecretKey, cfg.PeerLegacyAuth), &ha.PeerTLS{Cert: mat.NodeCert, CA: mat.CAPool})
+			ha.NewPeerAuth(cfg.SecretKey), &ha.PeerTLS{Cert: mat.NodeCert, CA: mat.CAPool})
 		n.Repl = peers
 	} else {
 		log.Info("PEER_HEADLESS_SERVICE is not configured. Standalone mode active.")

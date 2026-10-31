@@ -100,7 +100,7 @@ The HA layer follows the fork's design, ported decision by decision (`leader-ele
 - **xray health gate:** a leader whose xray died (OOM) while a standby is healthy steps down and wakes the standby. A pod with a warm peer won't take the lease until its own xray is up; on a genuine cold start it takes it at once so the panel can connect.
 - **Shutdown:** the leader releases the lease and drains 5 s before exit.
 
-Configuration is the fork's: `K8S_LEADER_ELECTION_ENABLED`, `K8S_LEASE_NAME`, `PEER_HEADLESS_SERVICE`, `HEALTH_PORT` (peer port), `POD_NAME`, `POD_NAMESPACE`. One addition: `PEER_ACCEPT_LEGACY_SECRET_HEADER=true` lets Go pods accept a TS pod's old `X-Secret-Key` during a migration (see fix 5 below). Go pods never send it.
+Configuration is the fork's: `K8S_LEADER_ELECTION_ENABLED`, `K8S_LEASE_NAME`, `PEER_HEADLESS_SERVICE`, `HEALTH_PORT` (peer port), `POD_NAME`, `POD_NAMESPACE`. Go and TS pods don't peer with each other (Go never sends or accepts the TS `X-Secret-Key`, see fix 5), so migrate with a full rollout.
 
 `internal/ha` unit tests run two and three electors against an in-memory API server (failover after a release and after expiry, stale-label cleanup, every yield rule, the health gate) and two peer-sync instances over real TLS sockets (catch-up with plugin and journal, 41 actions replicated in order, unsigned requests refused).
 
@@ -198,11 +198,10 @@ These are fixed in the Go node. Each one can be patched in the TS fork separatel
    - TS: the snapshot a new pod catches up from holds only the last `xray/start` request. Users added or removed since (`add-user`, `remove-users`, …) are missing on the new pod, and once it takes over (failover or rollout), those users are cut off until the panel next restarts xray. A replicated user change that reaches a standby whose xray isn't up is also dropped.
    - Go: each node keeps a journal of user operations since its last full start; the snapshot carries it and the catching-up pod replays it after starting xray.
 7. **Replication could reorder operations.** TS fires each replication with `void fetch(…)`, so a quick `add-user` + `remove-user` can arrive reversed. Go sends through one ordered queue.
+8. **`blockDuration: 0` restored the user at once** (`setTimeout(…, 0)`), although the plugin schema documents 0 as permanent. Go blocks permanently (until a node restart or the panel re-adds the user), on standbys too. The usual value, the panel's 60-minute default, is unaffected.
 
 ## Known gaps
-- **Chart: `node.service.type: ClusterIP` doesn't install.** The api Service always sets `externalTrafficPolicy` (default `Local`), which Kubernetes rejects for ClusterIP. The kind test uses NodePort. Not changed here (chart, not node).
 
-- **`blockDuration: 0` restores immediately**, as in the TS fork (`setTimeout(…, 0)`). The schema text says "permanent", so the team should decide.
 
 ## Other differences
 

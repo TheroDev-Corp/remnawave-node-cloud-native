@@ -271,7 +271,7 @@ func TestRestartedContainerReleasesItsOldLease(t *testing.T) {
 }
 
 func TestPeerAuth(t *testing.T) {
-	a := NewPeerAuth("secret-key-material", false)
+	a := NewPeerAuth("secret-key-material")
 	mk := func(method, path, body string) *http.Request {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		a.Sign(r, []byte(body))
@@ -298,7 +298,7 @@ func TestPeerAuth(t *testing.T) {
 	if _, ok := a.Verify(r4); ok {
 		t.Error("signature for another path accepted")
 	}
-	other := NewPeerAuth("another-secret", false)
+	other := NewPeerAuth("another-secret")
 	r5 := httptest.NewRequest("GET", "/internal/peer-sync/snapshot", nil)
 	other.Sign(r5, nil)
 	if _, ok := a.Verify(r5); ok {
@@ -318,12 +318,7 @@ func TestPeerAuth(t *testing.T) {
 	r7 := httptest.NewRequest("GET", "/internal/peer-sync/snapshot", nil)
 	r7.Header.Set("X-Secret-Key", "secret-key-material")
 	if _, ok := a.Verify(r7); ok {
-		t.Error("legacy X-Secret-Key accepted without PEER_ACCEPT_LEGACY_SECRET_HEADER")
-	}
-	r8 := httptest.NewRequest("GET", "/internal/peer-sync/snapshot", nil)
-	r8.Header.Set("X-Secret-Key", "secret-key-material")
-	if _, ok := NewPeerAuth("secret-key-material", true).Verify(r8); !ok {
-		t.Error("legacy mode must accept TS peers")
+		t.Error("the TS fork's X-Secret-Key must not authenticate a peer")
 	}
 }
 
@@ -427,7 +422,7 @@ func (l *fakeLocal) snapshot() ([]string, int, json.RawMessage) {
 // plugin), then ordered replication.
 func TestPeerSyncOverTLS(t *testing.T) {
 	pt, secret := peerTLS(t)
-	auth := NewPeerAuth(secret, false)
+	auth := NewPeerAuth(secret)
 	mkNode := func(local *fakeLocal) (*PeerSync, string, func()) {
 		ln, _ := net.Listen("tcp", "127.0.0.1:0")
 		ps := NewPeerSync(quietLog(), local, nil, "peers.test", "ns", 0, auth, pt)

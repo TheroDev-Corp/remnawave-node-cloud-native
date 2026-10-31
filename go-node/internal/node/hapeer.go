@@ -118,14 +118,18 @@ func (n *Node) applyOp(ctx context.Context, action string, body json.RawMessage)
 		n.RemoveUsers(ctx, req.Users)
 	case "suspendUser":
 		var req struct {
-			UserID  string `json:"userId"`
-			UnbanAt int64  `json:"unbanAt"`
+			UserID          string `json:"userId"`
+			DurationSeconds int64  `json:"durationSeconds"`
+			UnbanAt         int64  `json:"unbanAt"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			return err
 		}
-		// Math.max(1, Math.round((unbanAt - Date.now()) / 1000))
+		// Math.max(1, Math.round((unbanAt - Date.now()) / 1000)); 0 stays permanent.
 		secs := int64(math.Max(1, math.Round(float64(req.UnbanAt-time.Now().UnixMilli())/1000)))
+		if req.DurationSeconds == 0 {
+			secs = 0
+		}
 		n.Plugins.Suspend(ctx, req.UserID, secs, false)
 	case "restoreUser":
 		var req struct {

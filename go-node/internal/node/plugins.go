@@ -462,12 +462,12 @@ func webhookShapeOK(body json.RawMessage) bool {
 }
 
 // Suspend is UserSuspensionService.suspendUser: remove the user from every
-// inbound for `seconds`, then restore. With no stored definition (a user
+// inbound for `seconds` (0 = permanent), then restore. With no stored definition (a user
 // that came with the initial xray config), the definition is derived from
 // the live config so the user can be restored — the TS fork could not.
 func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, replicate bool) bool {
 	p.mu.Lock()
-	if t, ok := p.suspended[userID]; ok {
+	if t, ok := p.suspended[userID]; ok && t != nil {
 		t.Stop()
 	}
 	p.mu.Unlock()
@@ -482,7 +482,13 @@ func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, rep
 	for _, tag := range p.n.State.Tags() {
 		p.n.XAPI.RemoveUser(ctx, tag, userID)
 	}
-	t := time.AfterFunc(time.Duration(seconds)*time.Second, func() { p.Restore(context.Background(), userID, true) })
+	// blockDuration 0 is permanent, as the plugin schema documents (the TS
+	// fork restored at once): no timer; a node restart or the panel re-adding
+	// the user brings them back.
+	var t *time.Timer
+	if seconds > 0 {
+		t = time.AfterFunc(time.Duration(seconds)*time.Second, func() { p.Restore(context.Background(), userID, true) })
+	}
 	p.mu.Lock()
 	p.suspended[userID] = t
 	p.mu.Unlock()
@@ -497,7 +503,9 @@ func (p *Plugins) Suspend(ctx context.Context, userID string, seconds int64, rep
 func (p *Plugins) Restore(ctx context.Context, userID string, replicate bool) bool {
 	p.mu.Lock()
 	if t, ok := p.suspended[userID]; ok {
-		t.Stop()
+		if t != nil {
+			t.Stop()
+		}
 		delete(p.suspended, userID)
 	}
 	p.mu.Unlock()

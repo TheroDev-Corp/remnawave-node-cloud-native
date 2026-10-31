@@ -524,6 +524,15 @@ func TestPanelContractEndToEnd(t *testing.T) {
 		t.Errorf("restored SS2022 user must keep its key %v, xray has %s", ss22Client, acc)
 	}
 
+	// blockDuration 0 is permanent (plugin schema): no automatic restore.
+	plugin["plugin"].(map[string]any)["config"].(map[string]any)["torrentBlocker"].(map[string]any)["blockDuration"] = 0
+	p.must("POST", "/node/plugin/sync", "SyncCommand", plugin, true, 201)
+	n.Plugins.HandleWebhook(hook("2", "tcp:203.0.113.10:40000"))
+	time.Sleep(1500 * time.Millisecond)
+	if ok, _ := userIn("VLESS", "2"); ok {
+		t.Error("blockDuration 0 must keep the user blocked")
+	}
+
 	// Stop: isStopped, then system stats fail again.
 	if r := resp(p.must("GET", "/node/xray/stop", "StopXrayCommand", nil, false, 200)); r["isStopped"] != true {
 		t.Fatalf("stop: %v", r)

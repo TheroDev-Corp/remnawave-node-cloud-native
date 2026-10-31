@@ -6,7 +6,6 @@ import (
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -38,27 +37,21 @@ const peerHeader = "X-Rw-Peer"
 var PeerAuthWindow = 30 * time.Second
 
 type PeerAuth struct {
-	key    []byte
-	legacy string // accept the TS fork's X-Secret-Key (migration only)
-	now    func() time.Time
+	key []byte
+	now func() time.Time
 
 	mu   sync.Mutex
 	seen map[string]time.Time
 }
 
-// NewPeerAuth derives the HMAC key from SECRET_KEY. acceptLegacy also
-// accepts X-Secret-Key: <SECRET_KEY> from TS pods during a migration; the Go
-// node never sends it.
-func NewPeerAuth(secretKey string, acceptLegacy bool) *PeerAuth {
+// NewPeerAuth derives the HMAC key from SECRET_KEY. The TS fork's
+// X-Secret-Key header is never sent nor accepted.
+func NewPeerAuth(secretKey string) *PeerAuth {
 	key, err := hkdf.Key(sha256.New, []byte(secretKey), []byte("remnawave-node-peer"), "rw-peer-v1", 32)
 	if err != nil {
 		panic(err)
 	}
-	a := &PeerAuth{key: key, now: time.Now, seen: map[string]time.Time{}}
-	if acceptLegacy {
-		a.legacy = secretKey
-	}
-	return a
+	return &PeerAuth{key: key, now: time.Now, seen: map[string]time.Time{}}
 }
 
 func (a *PeerAuth) sign(method, path string, ts int64, body []byte) string {
@@ -79,11 +72,6 @@ func (a *PeerAuth) Verify(r *http.Request) ([]byte, bool) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 50<<20)) // express.json({limit:'50mb'})
 	if err != nil {
 		return nil, false
-	}
-	if a.legacy != "" {
-		if h := r.Header.Get("X-Secret-Key"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(a.legacy)) == 1 {
-			return body, true
-		}
 	}
 	var ts int64
 	var sig string
