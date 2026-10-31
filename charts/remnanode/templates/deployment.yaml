@@ -44,22 +44,35 @@ spec:
       {{- end }}
       hostNetwork: {{ if .Values.node.hostNetwork }}true{{ else }}false{{ end }}
       dnsPolicy: {{ if .Values.node.hostNetwork }}ClusterFirstWithHostNet{{ else }}ClusterFirst{{ end }}
-      {{- $nonRoot := and .Values.podSecurity .Values.podSecurity.runAsNonRoot }}
-      {{- if $nonRoot }}
+      {{- $ps := .Values.podSecurity | default dict }}
+      {{- $nonRoot := $ps.runAsNonRoot }}
+      {{- $hasUser := not (kindIs "invalid" $ps.runAsUser) }}
+      {{- $hasGroup := not (kindIs "invalid" $ps.runAsGroup) }}
+      {{- $hasPorts := and (not .Values.node.hostNetwork) (not (kindIs "invalid" $ps.unprivilegedPortStart)) }}
+      {{- if and $nonRoot $hasUser (eq (int $ps.runAsUser) 0) }}
+      {{- fail "podSecurity.runAsNonRoot can't be combined with runAsUser: 0" }}
+      {{- end }}
       securityContext:
+        {{- if $hasUser }}
+        runAsUser: {{ $ps.runAsUser }}
+        {{- end }}
+        {{- if $hasGroup }}
+        runAsGroup: {{ $ps.runAsGroup }}
+        {{- end }}
+        {{- if $nonRoot }}
         runAsNonRoot: true
-        runAsUser: {{ .Values.podSecurity.runAsUser | default 65534 }}
-        runAsGroup: {{ .Values.podSecurity.runAsGroup | default 65534 }}
-        fsGroup: {{ .Values.podSecurity.fsGroup | default 65534 }}
-        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
-        {{- if not .Values.node.hostNetwork }}
+        {{- end }}
+        {{- if not (kindIs "invalid" $ps.fsGroup) }}
+        fsGroup: {{ $ps.fsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+        {{- end }}
+        {{- if $hasPorts }}
         sysctls:
           - name: net.ipv4.ip_unprivileged_port_start
-            value: {{ .Values.podSecurity.unprivilegedPortStart | default 0 | quote }}
+            value: {{ $ps.unprivilegedPortStart | quote }}
         {{- end }}
-      {{- end }}
 
       {{- if .Values.geodata.enabled }}
       initContainers:
@@ -200,10 +213,6 @@ spec:
               mountPath: {{ .Values.node.tlsMount.mountPath }}
               readOnly: true
             {{- end }}
-            {{- if $nonRoot }}
-            - name: xray-log
-              mountPath: /var/log/xray
-            {{- end }}
           {{- if $nonRoot }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -259,12 +268,6 @@ spec:
           configMap:
             name: {{ include "remnanode.fullname" . }}-downloader-script
             defaultMode: 0755
-        {{- end }}
-        {{- if $nonRoot }}
-        # xray log file (/var/log/xray/current): the image's directory is root-owned.
-        - name: xray-log
-          emptyDir:
-            sizeLimit: 32Mi
         {{- end }}
         {{- if .Values.node.tlsMount.enabled }}
         - name: tls-cert
