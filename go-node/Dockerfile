@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 
 FROM alpine:3.21 AS xray
-ARG XRAY_CORE_VERSION=v26.10.21
+ARG XRAY_CORE_VERSION=v26.7.28
 ARG UPSTREAM_REPO=XTLS
 ARG TARGETARCH
 RUN apk add --no-cache curl ca-certificates \

@@ -26,7 +26,7 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | b
 
 ENV PATH="/root/.nvm/versions/node/v24.12.0/bin:${PATH}"
 
-RUN curl -L https://raw.githubusercontent.com/remnawave/scripts/main/scripts/install-latest-xray.sh | bash -s -- v26.10.21 \
+RUN curl -L https://raw.githubusercontent.com/remnawave/scripts/main/scripts/install-latest-xray.sh | bash -s -- v26.7.28 \
     && ln -s /usr/local/bin/xray /usr/local/bin/rw-core
 
 

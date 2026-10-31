@@ -42,7 +42,7 @@ testdata/node           fixture.mjs: runs the TS node's own code/packages for cr
 
 ```bash
 go test ./...                              # unit + TLS end-to-end
-XRAY_BINARY=/path/to/xray go test ./...    # + supervisor tests against a real xray v26.10.21
+XRAY_BINARY=/path/to/xray go test ./...    # + supervisor tests against a real xray v26.7.28 (the pinned version)
 ```
 
 The cross-checks run when `node` is installed and `npm ci` has been run in the repo root:
@@ -127,7 +127,7 @@ KIND_CONTEXT=kind-rwnode KIND_IMAGE=remnawave-node-go:dev go test -v -timeout 30
 
 ## Image and resources (milestone 5)
 
-`Dockerfile` builds a static Go binary (`CGO_ENABLED=0`) and copies it onto `scratch` with what the TS image ships next to the node: xray-core v26.10.21 (`/usr/local/bin/xray`, `rw-core` symlink, geoip/geosite), geocheck 0.3.0, `asn-prefixes.lmdb`, and CA certificates. Downloads are checksum-verified like in `docker/Dockerfile`. No shell, no s6, no Node.js.
+`Dockerfile` builds a static Go binary (`CGO_ENABLED=0`) and copies it onto `scratch` with what the TS image ships next to the node: xray-core v26.7.28 (`/usr/local/bin/xray`, `rw-core` symlink, geoip/geosite), geocheck 0.3.0, `asn-prefixes.lmdb`, and CA certificates. Downloads are checksum-verified like in `docker/Dockerfile`. No shell, no s6, no Node.js.
 
 ```bash
 docker buildx build -t remnawave-node-go go-node
