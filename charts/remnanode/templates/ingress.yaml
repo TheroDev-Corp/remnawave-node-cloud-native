@@ -31,6 +31,10 @@ spec:
 {{- end }}
 
 ---
+{{- /* The website routes only exist together with the website Service. Without it they point at
+       nothing and traefik answers 503 on the domain; leaving them out lets the cluster's
+       catch-all router answer instead. */}}
+{{- if .Values.website.enabled }}
 # 1. Main Website (Fallback/Camouflage)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -83,6 +87,7 @@ spec:
                 port:
                   number: 80
 {{- end }}
+{{- end }}{{/* End if website.enabled */}}
 
 ---
 # Routing based on Inbounds
