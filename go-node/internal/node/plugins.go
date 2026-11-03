@@ -327,7 +327,11 @@ func (p *Plugins) Sync(ctx context.Context, plugin *struct {
 				p.tbIncludeTags[t] = true
 			}
 		}
-		log.Info(fmt.Sprintf("[PLUGIN] Torrent-Blocker: blockDuration=%ds, %d ignored IPs, %d ignored users", tb.BlockDuration, len(ips), len(p.tbIgnoredUsers)))
+		mode := fmt.Sprintf("blockDuration=%ds", tb.BlockDuration)
+		if tb.BlockDuration < 0 {
+			mode = "notify-only (blockDuration < 0)"
+		}
+		log.Info(fmt.Sprintf("[PLUGIN] Torrent-Blocker: %s, %d ignored IPs, %d ignored users", mode, len(ips), len(p.tbIgnoredUsers)))
 	}
 	if ps := cfg.PreStart; ps != nil && ps.Enabled {
 		p.preEnabled = true
@@ -467,8 +471,17 @@ func (p *Plugins) HandleWebhook(body json.RawMessage) {
 	if ignored {
 		return
 	}
-	p.n.Log.Warn(fmt.Sprintf("[TORRENT-BLOCKER] Detected torrent (client: %s, user: %s). Suspending user for %ds...", ip, *w.Email, duration))
-	blocked := p.Suspend(context.Background(), *w.Email, duration, true)
+	blocked := false
+	if duration < 0 {
+		// Go-only notify-only mode (README "Other differences"): the torrent
+		// connection is already dropped by the blackhole rule; report it, but
+		// keep the user connected. The report says "0 min, unblock now".
+		p.n.Log.Warn(fmt.Sprintf("[TORRENT-BLOCKER] Detected torrent (client: %s, user: %s). Notify-only (blockDuration < 0), not suspending.", ip, *w.Email))
+		duration = 0
+	} else {
+		p.n.Log.Warn(fmt.Sprintf("[TORRENT-BLOCKER] Detected torrent (client: %s, user: %s). Suspending user for %ds...", ip, *w.Email, duration))
+		blocked = p.Suspend(context.Background(), *w.Email, duration, true)
+	}
 	now := time.Now().UTC()
 	var r torrentReport
 	r.ActionReport.Blocked, r.ActionReport.IP, r.ActionReport.BlockDuration = blocked, ip, duration

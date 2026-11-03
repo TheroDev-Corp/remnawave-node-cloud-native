@@ -153,3 +153,34 @@ func TestASListIgnore(t *testing.T) {
 		}
 	}
 }
+
+// blockDuration < 0 is the Go-only notify-only mode: a detection is reported,
+// but the user is not suspended (the torrent connection itself is already
+// dropped by the blackhole rule).
+func TestTorrentNotifyOnly(t *testing.T) {
+	n := New(&config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), ha.Standalone{}, nil, nil, "", nil)
+	p := n.Plugins
+	p.mu.Lock()
+	p.tbEnabled, p.tbDuration = true, -1
+	p.mu.Unlock()
+	body, _ := json.Marshal(map[string]any{"email": "7", "level": 0, "protocol": "bittorrent", "network": "tcp",
+		"source": "tcp:203.0.113.9:40000", "destination": "tcp:1.1.1.1:6881", "routeTarget": nil, "originalTarget": nil,
+		"inboundTag": "VLESS", "inboundName": nil, "inboundLocal": nil, "outboundTag": torrentOutboundTag, "ts": 1})
+	// n.XAPI is nil here: a suspension attempt would panic.
+	p.HandleWebhook(body)
+
+	p.mu.Lock()
+	_, suspended := p.suspended["7"]
+	p.mu.Unlock()
+	if suspended {
+		t.Fatal("notify-only must not suspend the user")
+	}
+	reps := p.Collect()
+	if len(reps) != 1 {
+		t.Fatalf("want 1 report, got %d", len(reps))
+	}
+	a := reps[0].ActionReport
+	if a.Blocked || a.BlockDuration != 0 || a.UserID != "7" || a.IP != "203.0.113.9" || a.WillUnblockAt != a.ProcessedAt {
+		t.Errorf("notify-only report: %+v", a)
+	}
+}

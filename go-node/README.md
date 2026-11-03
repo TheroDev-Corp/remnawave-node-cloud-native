@@ -299,6 +299,7 @@ These are fixed in the Go node. Each one can be patched in the TS fork separatel
 - **No s6, no internal config socket.** xray gets its config on stdin, and Go supervises it. As with `s6-svc -o`, a crashed xray is not restarted automatically.
 - **Internal names.** `INTERNAL_REST_TOKEN`, `INTERNAL_SOCKET_PATH` and `XTLS_API_SOCKET_PATH` are generated in-process when unset, in the same formats as `init-env.sh`.
 - **`METRICS_PORT`** (Go-only, off by default) serves Prometheus metrics; see "Metrics".
+- **Torrent blocker notify-only mode** (Go-only): `torrentBlocker.blockDuration` below 0 (e.g. `-1`) reports a detection but does not suspend the user. The torrent connection is still dropped by the blackhole rule (and by profile rules that route to a missing outbound), so only the torrent traffic stops and the rest of the user's traffic keeps working. The report goes to the panel and the webhook as usual, with `blocked: false`, `blockDuration: 0` and `willUnblockAt` equal to `processedAt` (the panel's Telegram alert shows "0 min"). The plugin schema already accepts negative values. The TS node, and the Go node before this change, treated them as a permanent ban, so set `-1` only on nodes that run this version.
 - **TLS handshake timeout** follows the HTTP header timeout (61 s), not Node's 10 s `handshakeTimeout`.
 
 License: AGPL-3.0-only, like upstream.
