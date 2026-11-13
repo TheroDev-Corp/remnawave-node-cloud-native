@@ -135,7 +135,20 @@ func (n *Node) CollectMetrics(ctx context.Context) []byte {
 	for _, c := range sortedKeys(collectors) {
 		w.sample("remnanode_metrics_collector_success", b2f(collectors[c]), "collector", c)
 	}
+	if n.Cfg != nil && n.Cfg.CPUThrottleEnabled {
+		writeCPUThrottleMetrics(w, activeCPUThrottle.Load())
+	}
 	return w.Bytes()
+}
+
+func writeCPUThrottleMetrics(w *promWriter, ct *CPUThrottle) {
+	ratio, active, rateBytes := ct.Stats()
+	w.family("remnanode_node_cpu_usage_ratio", "gauge", "Host CPU usage ratio (0..1) sampled from /proc/stat.")
+	w.sample("remnanode_node_cpu_usage_ratio", ratio)
+	w.family("remnanode_cpu_throttle_active", "gauge", "1 if adaptive CPU throttling is currently active, 0 otherwise.")
+	w.sample("remnanode_cpu_throttle_active", b2f(active))
+	w.family("remnanode_cpu_throttle_rate_bytes_per_sec", "gauge", "Current Xray rate limit in bytes/sec (0 = unlimited).")
+	w.sample("remnanode_cpu_throttle_rate_bytes_per_sec", float64(rateBytes))
 }
 
 func (n *Node) writeTraffic(w *promWriter, totals map[trafficKey]int64) {

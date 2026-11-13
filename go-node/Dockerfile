@@ -13,11 +13,19 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     go build -trimpath -ldflags='-s -w' -o /out/node .
 
 
-FROM alpine:3.21 AS xray
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS xray
 ARG XRAY_CORE_VERSION=v26.7.28
 ARG UPSTREAM_REPO=XTLS
-ARG TARGETARCH
-RUN apk add --no-cache curl ca-certificates \
+ARG TARGETOS TARGETARCH
+COPY patches/xray-ratelimit.patch /tmp/xray-ratelimit.patch
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    apk add --no-cache git curl ca-certificates \
+    && git clone --depth 1 --branch "${XRAY_CORE_VERSION}" "https://github.com/${UPSTREAM_REPO}/Xray-core.git" /tmp/xray-src \
+    && git -C /tmp/xray-src apply /tmp/xray-ratelimit.patch \
+    && mkdir -p /rootfs/usr/local/bin /rootfs/usr/local/share/xray /rootfs/var/log/xray /rootfs/var/lib/rw-core /rootfs/tmp /rootfs/etc/ssl/certs \
+    && (cd /tmp/xray-src && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+        go build -trimpath -ldflags='-s -w' -o /rootfs/usr/local/bin/xray ./main) \
+    && chmod 755 /rootfs/usr/local/bin/xray \
     && case "${TARGETARCH}" in \
         amd64) ARCHIVE='Xray-linux-64.zip' ;; \
         arm64) ARCHIVE='Xray-linux-arm64-v8a.zip' ;; \
@@ -26,12 +34,10 @@ RUN apk add --no-cache curl ca-certificates \
     && curl -fsSL -o "/tmp/${ARCHIVE}" "${BASE}/${ARCHIVE}" \
     && curl -fsSL -o /tmp/xray.dgst "${BASE}/${ARCHIVE}.dgst" \
     && echo "$(awk '/^SHA2-256=/ { print $2 }' /tmp/xray.dgst)  /tmp/${ARCHIVE}" | sha256sum -c - \
-    && unzip -q "/tmp/${ARCHIVE}" -d /tmp/xray \
-    && mkdir -p /rootfs/usr/local/bin /rootfs/usr/local/share/xray /rootfs/var/log/xray /rootfs/var/lib/rw-core /rootfs/tmp /rootfs/etc/ssl/certs \
-    && install -m 755 /tmp/xray/xray /rootfs/usr/local/bin/xray \
+    && unzip -q "/tmp/${ARCHIVE}" geoip.dat geosite.dat -d /tmp/xray-dist \
     && ln -s /usr/local/bin/xray /rootfs/var/lib/rw-core/current \
     && ln -s /var/lib/rw-core/current /rootfs/usr/local/bin/rw-core \
-    && install -m 644 /tmp/xray/geoip.dat /tmp/xray/geosite.dat /rootfs/usr/local/share/xray/ \
+    && install -m 644 /tmp/xray-dist/geoip.dat /tmp/xray-dist/geosite.dat /rootfs/usr/local/share/xray/ \
     && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ \
     && chmod 1777 /rootfs/tmp \
     && chown -h 65534:65534 /rootfs/var/lib/rw-core /rootfs/var/lib/rw-core/current /rootfs/usr/local/share/xray /rootfs/var/log/xray

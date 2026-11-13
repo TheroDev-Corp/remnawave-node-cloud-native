@@ -55,6 +55,11 @@ func main() {
 	defer stop()
 
 	proc := xray.NewProcess(cfg.XrayBinary, "/var/log/xray/current", log)
+	if cfg.CPUThrottleEnabled {
+		proc.SetRatelimitFile(cfg.CPUThrottleControlFile)
+	}
+	cpuThrottle := node.StartCPUThrottle(cfg, log)
+	defer cpuThrottle.Stop()
 	listen := apiListen(cfg)
 	xapi, err := xray.Dial(listen)
 	if err != nil {
@@ -194,6 +199,7 @@ func main() {
 		_ = s.Shutdown(shutdownCtx)
 	}
 	n.StopXray(false, false)
+	cpuThrottle.Stop()
 }
 
 // apiListen is the xray api inbound address: the abstract socket the TS
