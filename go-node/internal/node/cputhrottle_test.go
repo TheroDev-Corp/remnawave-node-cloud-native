@@ -186,3 +186,50 @@ func TestStartCPUThrottleDisabled(t *testing.T) {
 		t.Fatal("expected nil when disabled")
 	}
 }
+
+func TestCPUThrottleTickIdleExceedsTotal(t *testing.T) {
+	dir := t.TempDir()
+	statPath := filepath.Join(dir, "stat")
+	ctrlPath := filepath.Join(dir, "rw-ratelimit")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if err := os.WriteFile(statPath, []byte("cpu  100 0 0 900 0 0 0 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ct := newCPUThrottle(testThrottleConfig(ctrlPath), log, statPath, ctrlPath)
+	ct.tick() // baseline: total=1000, idle=900
+
+	// dTotal = 100, dIdle = 200 (dIdle > dTotal) must clamp ratio to 0 without uint64 underflow.
+	if err := os.WriteFile(statPath, []byte("cpu  0 0 0 1100 0 0 0 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ct.tick()
+	ratio, active, rate := ct.Stats()
+	if ratio != 0 || active || rate != 0 {
+		t.Fatalf("expected ratio=0 active=false rate=0, got ratio=%v active=%v rate=%d", ratio, active, rate)
+	}
+}
+
+func TestCPUThrottleWriteRateFileFailureKeepsState(t *testing.T) {
+	dir := t.TempDir()
+	// Use a file path as the parent directory so MkdirAll/CreateTemp fails deterministically.
+	blockerFile := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badCtrlPath := filepath.Join(blockerFile, "rw-ratelimit")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ct := newCPUThrottle(testThrottleConfig(badCtrlPath), log, "", badCtrlPath)
+	ct.lastWritten = 0
+
+	ct.mu.Lock()
+	ct.stepLocked(0.95)
+	ct.stepLocked(0.95)
+	ct.stepLocked(0.95) // attempts to engage and write badCtrlPath
+	ct.mu.Unlock()
+
+	_, active, rate := ct.Stats()
+	if active || rate != 0 {
+		t.Fatalf("expected previous state preserved on write failure, got active=%v rate=%d", active, rate)
+	}
+}

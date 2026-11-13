@@ -174,10 +174,11 @@ func (ct *CPUThrottle) tick() {
 	if dTotal == 0 {
 		return
 	}
-	ratio := float64(dTotal-dIdle) / float64(dTotal)
-	if ratio < 0 {
-		ratio = 0
-	} else if ratio > 1 {
+	var ratio float64
+	if dIdle < dTotal {
+		ratio = float64(dTotal-dIdle) / float64(dTotal)
+	}
+	if ratio > 1 {
 		ratio = 1
 	}
 	ct.stepLocked(ratio)
@@ -185,6 +186,10 @@ func (ct *CPUThrottle) tick() {
 
 func (ct *CPUThrottle) stepLocked(ratio float64) {
 	ct.cpuRatio = ratio
+	prevActive := ct.active
+	prevRateMbps := ct.rateMbps
+	prevRateBytes := ct.rateBytes
+
 	highRatio := float64(ct.cfg.CPUThrottleHighPct) / 100.0
 	lowRatio := float64(ct.cfg.CPUThrottleLowPct) / 100.0
 	maxRate := float64(ct.cfg.CPUThrottleRateMbps)
@@ -262,14 +267,17 @@ func (ct *CPUThrottle) stepLocked(ratio float64) {
 	if ct.active {
 		targetBytes = int64(math.Round(ct.rateMbps * bytesPerMbps))
 	}
-	ct.rateBytes = targetBytes
 	if targetBytes != ct.lastWritten {
 		if err := ct.writeRateFile(targetBytes); err != nil {
 			ct.log.Warn("CPU throttle: failed to update control file", "path", ct.controlFile, "err", err)
-		} else {
-			ct.lastWritten = targetBytes
+			ct.active = prevActive
+			ct.rateMbps = prevRateMbps
+			ct.rateBytes = prevRateBytes
+			return
 		}
+		ct.lastWritten = targetBytes
 	}
+	ct.rateBytes = targetBytes
 }
 
 func (ct *CPUThrottle) writeRateFile(bytesPerSec int64) error {
