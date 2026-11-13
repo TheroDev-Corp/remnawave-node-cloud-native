@@ -1,0 +1,253 @@
+diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
+index cae9735..81be9f1 100644
+--- a/app/dispatcher/default.go
++++ b/app/dispatcher/default.go
+@@ -158,6 +158,8 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 		user = sessionInbound.User
+ 	}
+ 
++	uplinkWrapped := false
++	downlinkWrapped := false
+ 	if user != nil && len(user.Email) > 0 {
+ 		p := d.policy.ForLevel(user.Level)
+ 		if p.Stats.UserUplink {
+@@ -167,6 +169,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 					Counter: c,
+ 					Writer:  inboundLink.Writer,
+ 				}
++				uplinkWrapped = true
+ 			}
+ 		}
+ 		if p.Stats.UserDownlink {
+@@ -176,6 +179,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 					Counter: c,
+ 					Writer:  outboundLink.Writer,
+ 				}
++				downlinkWrapped = true
+ 			}
+ 		}
+ 
+@@ -183,6 +187,14 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 			trackOnlineIP(ctx, d.stats, user.Email, sessionInbound.Source.Address.String())
+ 		}
+ 	}
++	if globalRateLimitEnabled {
++		if !uplinkWrapped {
++			inboundLink.Writer = &rateLimitWriter{Writer: inboundLink.Writer}
++		}
++		if !downlinkWrapped {
++			outboundLink.Writer = &rateLimitWriter{Writer: outboundLink.Writer}
++		}
++	}
+ 
+ 	return inboundLink, outboundLink
+ }
+@@ -196,6 +208,7 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
+ 
+ 	link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
+ 
++	downlinkWrapped := false
+ 	if user != nil && len(user.Email) > 0 {
+ 		p := policyManager.ForLevel(user.Level)
+ 		if p.Stats.UserUplink {
+@@ -211,12 +224,16 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
+ 					Counter: c,
+ 					Writer:  link.Writer,
+ 				}
++				downlinkWrapped = true
+ 			}
+ 		}
+ 		if p.Stats.UserOnline {
+ 			trackOnlineIP(ctx, statsManager, user.Email, sessionInbound.Source.Address.String())
+ 		}
+ 	}
++	if globalRateLimitEnabled && !downlinkWrapped {
++		link.Writer = &rateLimitWriter{Writer: link.Writer}
++	}
+ 
+ 	return link
+ }
+diff --git a/app/dispatcher/ratelimit.go b/app/dispatcher/ratelimit.go
+new file mode 100644
+index 0000000..44cc847
+--- /dev/null
++++ b/app/dispatcher/ratelimit.go
+@@ -0,0 +1,103 @@
++package dispatcher
++
++import (
++	"os"
++	"strconv"
++	"strings"
++	"sync/atomic"
++	"time"
++
++	"github.com/juju/ratelimit"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++)
++
++const (
++	rateLimitEnvVar       = "XRAY_RATELIMIT_FILE"
++	rateLimitPollInterval = 500 * time.Millisecond
++	minBucketCapacity     = 64 * 1024
++)
++
++var (
++	globalRateBucket       atomic.Pointer[ratelimit.Bucket]
++	globalRateLimitEnabled bool
++)
++
++func init() {
++	path := os.Getenv(rateLimitEnvVar)
++	if path == "" {
++		return
++	}
++	globalRateLimitEnabled = true
++	var lastRate int64
++	updateRateLimit(path, &lastRate)
++	go func() {
++		ticker := time.NewTicker(rateLimitPollInterval)
++		defer ticker.Stop()
++		for range ticker.C {
++			updateRateLimit(path, &lastRate)
++		}
++	}()
++}
++
++func updateRateLimit(path string, lastRate *int64) {
++	data, err := os.ReadFile(path)
++	if err != nil {
++		if os.IsNotExist(err) && *lastRate != 0 {
++			*lastRate = 0
++			globalRateBucket.Store(nil)
++		}
++		return
++	}
++	s := strings.TrimSpace(string(data))
++	var rate int64
++	if s != "" {
++		parsed, err := strconv.ParseInt(s, 10, 64)
++		if err != nil {
++			return
++		}
++		rate = parsed
++	}
++	if rate < 0 {
++		rate = 0
++	}
++	if rate == *lastRate {
++		return
++	}
++	*lastRate = rate
++	if rate == 0 {
++		globalRateBucket.Store(nil)
++		return
++	}
++	capacity := rate
++	if capacity < minBucketCapacity {
++		capacity = minBucketCapacity
++	}
++	globalRateBucket.Store(ratelimit.NewBucketWithRate(float64(rate), capacity))
++}
++
++func waitRateLimit(n int64) {
++	if n <= 0 {
++		return
++	}
++	if b := globalRateBucket.Load(); b != nil {
++		b.Wait(n)
++	}
++}
++
++type rateLimitWriter struct {
++	Writer buf.Writer
++}
++
++func (w *rateLimitWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
++	waitRateLimit(int64(mb.Len()))
++	return w.Writer.WriteMultiBuffer(mb)
++}
++
++func (w *rateLimitWriter) Close() error {
++	return common.Close(w.Writer)
++}
++
++func (w *rateLimitWriter) Interrupt() {
++	common.Interrupt(w.Writer)
++}
+diff --git a/app/dispatcher/ratelimit_test.go b/app/dispatcher/ratelimit_test.go
+new file mode 100644
+index 0000000..483742a
+--- /dev/null
++++ b/app/dispatcher/ratelimit_test.go
+@@ -0,0 +1,57 @@
++package dispatcher
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++)
++
++func TestUpdateRateLimit(t *testing.T) {
++	defer globalRateBucket.Store(nil)
++
++	dir := t.TempDir()
++	path := filepath.Join(dir, "ratelimit")
++
++	var lastRate int64
++	// Missing file keeps bucket nil.
++	updateRateLimit(path, &lastRate)
++	if globalRateBucket.Load() != nil {
++		t.Fatal("expected nil bucket when file does not exist")
++	}
++
++	// Set a positive rate.
++	if err := os.WriteFile(path, []byte("1048576\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	updateRateLimit(path, &lastRate)
++	b1 := globalRateBucket.Load()
++	if b1 == nil {
++		t.Fatal("expected non-nil bucket for positive rate")
++	}
++	if lastRate != 1048576 {
++		t.Fatalf("expected lastRate 1048576, got %d", lastRate)
++	}
++
++	// Same rate should not replace the bucket.
++	updateRateLimit(path, &lastRate)
++	if globalRateBucket.Load() != b1 {
++		t.Fatal("expected bucket pointer to remain unchanged when rate is unchanged")
++	}
++
++	// Write through rateLimitWriter.
++	w := &rateLimitWriter{Writer: buf.Discard}
++	mb := buf.MergeBytes(nil, []byte("hello"))
++	common.Must(w.WriteMultiBuffer(mb))
++
++	// Zero disables the limiter.
++	if err := os.WriteFile(path, []byte("0\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	updateRateLimit(path, &lastRate)
++	if globalRateBucket.Load() != nil {
++		t.Fatal("expected nil bucket when rate is 0")
++	}
++}
+diff --git a/app/dispatcher/stats.go b/app/dispatcher/stats.go
+index 8fac019..d38f7a4 100644
+--- a/app/dispatcher/stats.go
++++ b/app/dispatcher/stats.go
+@@ -12,6 +12,7 @@ type SizeStatWriter struct {
+ }
+ 
+ func (w *SizeStatWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
++	waitRateLimit(int64(mb.Len()))
+ 	w.Counter.Add(int64(mb.Len()))
+ 	return w.Writer.WriteMultiBuffer(mb)
+ }

@@ -36,9 +36,10 @@ type Status struct {
 // Process runs one xray at a time. Like `s6-svc -o` in the TS image it never
 // restarts xray on its own: a crash leaves it down until the next start.
 type Process struct {
-	bin     string
-	logPath string
-	log     *slog.Logger
+	bin           string
+	logPath       string
+	log           *slog.Logger
+	ratelimitFile string
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
@@ -59,6 +60,14 @@ func NewProcess(bin, logPath string, log *slog.Logger) *Process {
 	return &Process{bin: bin, logPath: logPath, log: log}
 }
 
+// SetRatelimitFile configures the XRAY_RATELIMIT_FILE environment variable
+// passed to the xray child process on subsequent Start calls.
+func (p *Process) SetRatelimitFile(path string) {
+	p.mu.Lock()
+	p.ratelimitFile = path
+	p.mu.Unlock()
+}
+
 // Start launches xray with the given JSON config on stdin (nothing is
 // written to disk, like the TS node's config-over-socket). A running xray is
 // stopped first.
@@ -68,7 +77,20 @@ func (p *Process) Start(config []byte) error {
 	}
 	cmd := exec.Command(p.bin, "run", "-config", "stdin:", "-format", "json")
 	cmd.Stdin = bytes.NewReader(config)
-	cmd.Env = os.Environ()
+	env := os.Environ()
+	p.mu.Lock()
+	rlFile := p.ratelimitFile
+	p.mu.Unlock()
+	if rlFile != "" {
+		filtered := make([]string, 0, len(env)+1)
+		for _, kv := range env {
+			if !strings.HasPrefix(kv, "XRAY_RATELIMIT_FILE=") {
+				filtered = append(filtered, kv)
+			}
+		}
+		env = append(filtered, "XRAY_RATELIMIT_FILE="+rlFile)
+	}
+	cmd.Env = env
 	cmd.SysProcAttr = sysProcAttr()
 	out, err := cmd.StdoutPipe()
 	if err != nil {

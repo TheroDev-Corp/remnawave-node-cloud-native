@@ -134,6 +134,18 @@ spec:
             - name: XRAY_LOCATION_ASSET
               value: /data
             {{- end }}
+            {{- if and .Values.cpuThrottling .Values.cpuThrottling.enabled }}
+            - name: CPU_THROTTLE_ENABLED
+              value: "true"
+            - name: CPU_THROTTLE_HIGH_PCT
+              value: {{ .Values.cpuThrottling.highCpuPercent | default 90 | quote }}
+            - name: CPU_THROTTLE_LOW_PCT
+              value: {{ .Values.cpuThrottling.lowCpuPercent | default 75 | quote }}
+            - name: CPU_THROTTLE_RATE_MBPS
+              value: {{ .Values.cpuThrottling.rateMbps | default 50 | quote }}
+            - name: CPU_THROTTLE_MIN_MBPS
+              value: {{ .Values.cpuThrottling.minRateMbps | default 10 | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ .Values.node.apiPort }}
               name: api

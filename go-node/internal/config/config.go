@@ -39,6 +39,14 @@ type Config struct {
 	Debug       bool   // NODE_ENV=development
 	PodName     string // POD_NAME → HOSTNAME → os.Hostname()
 	PodNS       string
+
+	// Adaptive CPU-based speed throttling (opt-in).
+	CPUThrottleEnabled     bool
+	CPUThrottleHighPct     int
+	CPUThrottleLowPct      int
+	CPUThrottleRateMbps    int
+	CPUThrottleMinMbps     int
+	CPUThrottleControlFile string
 }
 
 type Lookup func(string) (string, bool)
@@ -130,6 +138,45 @@ func Load(env Lookup) (*Config, error) {
 		c.PodName, _ = os.Hostname()
 	}
 	c.PodNS = str("POD_NAMESPACE", "")
+
+	c.CPUThrottleEnabled = boolean("CPU_THROTTLE_ENABLED", "false")
+	c.CPUThrottleHighPct = 90
+	if v := str("CPU_THROTTLE_HIGH_PCT", ""); v != "" {
+		if n, ok := parseIntJS(v); ok && n >= 50 && n <= 99 {
+			c.CPUThrottleHighPct = n
+		} else {
+			add("CPU_THROTTLE_HIGH_PCT", "must be between 50 and 99")
+		}
+	}
+	c.CPUThrottleLowPct = 75
+	if v := str("CPU_THROTTLE_LOW_PCT", ""); v != "" {
+		if n, ok := parseIntJS(v); ok && n > 0 && n < c.CPUThrottleHighPct {
+			c.CPUThrottleLowPct = n
+		} else {
+			add("CPU_THROTTLE_LOW_PCT", "must be > 0 and < CPU_THROTTLE_HIGH_PCT")
+		}
+	} else if c.CPUThrottleLowPct >= c.CPUThrottleHighPct {
+		add("CPU_THROTTLE_LOW_PCT", "must be < CPU_THROTTLE_HIGH_PCT")
+	}
+	c.CPUThrottleRateMbps = 50
+	if v := str("CPU_THROTTLE_RATE_MBPS", ""); v != "" {
+		if n, ok := parseIntJS(v); ok && n > 0 {
+			c.CPUThrottleRateMbps = n
+		} else {
+			add("CPU_THROTTLE_RATE_MBPS", "must be > 0")
+		}
+	}
+	c.CPUThrottleMinMbps = 10
+	if v := str("CPU_THROTTLE_MIN_MBPS", ""); v != "" {
+		if n, ok := parseIntJS(v); ok && n > 0 && n <= c.CPUThrottleRateMbps {
+			c.CPUThrottleMinMbps = n
+		} else {
+			add("CPU_THROTTLE_MIN_MBPS", "must be > 0 and <= CPU_THROTTLE_RATE_MBPS")
+		}
+	} else if c.CPUThrottleMinMbps > c.CPUThrottleRateMbps {
+		add("CPU_THROTTLE_MIN_MBPS", "must be <= CPU_THROTTLE_RATE_MBPS")
+	}
+	c.CPUThrottleControlFile = orDefault(str("CPU_THROTTLE_CONTROL_FILE", ""), "/tmp/rw-ratelimit")
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("\n🔧 Environment Configuration Errors:\n%s\n\nPlease fix your .env file and restart the application.", strings.Join(errs, "\n"))
