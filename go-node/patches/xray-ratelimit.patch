@@ -1,12 +1,15 @@
 diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
-index cae9735..8dd8a09 100644
+index 2717df5..4874358 100644
 --- a/app/dispatcher/default.go
 +++ b/app/dispatcher/default.go
-@@ -158,24 +158,33 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+@@ -158,24 +158,36 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
  		user = sessionInbound.User
  	}
  
-+	skipRL := !globalRateLimitEnabled || isInternalAPITraffic(ctx)
++	skipRL := !globalRateLimitEnabled || isInternalAPITraffic(ctx) || isRateLimitedContext(ctx)
++	if !skipRL && globalRateLimiter.isActive() && sessionInbound != nil {
++		sessionInbound.CanSpliceCopy = 3
++	}
 +	uplinkWrapped := false
 +	downlinkWrapped := false
  	if user != nil && len(user.Email) > 0 {
@@ -40,7 +43,7 @@ index cae9735..8dd8a09 100644
  			}
  		}
  
-@@ -183,6 +192,14 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+@@ -183,6 +195,14 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
  			trackOnlineIP(ctx, d.stats, user.Email, sessionInbound.Source.Address.String())
  		}
  	}
@@ -55,16 +58,19 @@ index cae9735..8dd8a09 100644
  
  	return inboundLink, outboundLink
  }
-@@ -196,6 +213,8 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
+@@ -196,6 +216,11 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
  
  	link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
  
 +	skipRL := !globalRateLimitEnabled || isInternalAPITraffic(ctx) || isRateLimitedContext(ctx)
++	if !skipRL && globalRateLimiter.isActive() && sessionInbound != nil {
++		sessionInbound.CanSpliceCopy = 3
++	}
 +	downlinkWrapped := false
  	if user != nil && len(user.Email) > 0 {
  		p := policyManager.ForLevel(user.Level)
  		if p.Stats.UserUplink {
-@@ -208,15 +227,28 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
+@@ -208,15 +233,28 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
  			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
  			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
  				link.Writer = &SizeStatWriter{
@@ -95,7 +101,7 @@ index cae9735..8dd8a09 100644
  
  	return link
  }
-@@ -284,6 +316,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
+@@ -284,6 +322,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
  
  	sniffingRequest := content.SniffingRequest
  	inbound, outbound := d.getLink(ctx)
@@ -105,21 +111,31 @@ index cae9735..8dd8a09 100644
  	if !sniffingRequest.Enabled {
  		go d.routedDispatch(ctx, outbound, destination)
  	} else {
+@@ -339,6 +380,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
+ 		ctx = session.ContextWithContent(ctx, content)
+ 	}
+ 	outbound = WrapLink(ctx, d.policy, d.stats, outbound)
++	if globalRateLimitEnabled && !isInternalAPITraffic(ctx) {
++		ctx = markRateLimitedContext(ctx)
++	}
+ 	sniffingRequest := content.SniffingRequest
+ 	if !sniffingRequest.Enabled {
+ 		d.routedDispatch(ctx, outbound, destination)
 diff --git a/app/dispatcher/ratelimit.go b/app/dispatcher/ratelimit.go
 new file mode 100644
-index 0000000..7e55349
+index 0000000..c8e0d09
 --- /dev/null
 +++ b/app/dispatcher/ratelimit.go
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,299 @@
 +package dispatcher
 +
 +import (
 +	"context"
++	"math"
 +	"os"
 +	"strconv"
 +	"strings"
 +	"sync"
-+	"sync/atomic"
 +	"time"
 +
 +	"github.com/xtls/xray-core/common"
@@ -138,7 +154,7 @@ index 0000000..7e55349
 +type rateLimitMarkKey struct{}
 +
 +var (
-+	globalRateLimiter      atomic.Pointer[rateLimiter]
++	globalRateLimiter      = newRateLimiter()
 +	globalRateLimitEnabled bool
 +)
 +
@@ -159,39 +175,70 @@ index 0000000..7e55349
 +	}()
 +}
 +
-+// rateLimiter is a context-aware token bucket limiter that wakes waiters
-+// immediately on context cancellation or when closed/replaced.
++// rateLimiter is a context-aware token bucket limiter.
 +type rateLimiter struct {
 +	mu     sync.Mutex
 +	rate   float64
 +	burst  float64
 +	tokens float64
 +	last   time.Time
-+	closed bool
-+	done   chan struct{}
++	notify chan struct{}
 +}
 +
-+func newRateLimiter(rateBytesPerSec int64) *rateLimiter {
-+	burst := float64(rateBytesPerSec)
-+	if burst < minBucketCapacity {
-+		burst = minBucketCapacity
-+	}
++func newRateLimiter() *rateLimiter {
 +	return &rateLimiter{
-+		rate:   float64(rateBytesPerSec),
-+		burst:  burst,
-+		tokens: burst,
 +		last:   time.Now(),
-+		done:   make(chan struct{}),
++		notify: make(chan struct{}),
 +	}
 +}
 +
-+func (l *rateLimiter) close() {
-+	l.mu.Lock()
-+	if !l.closed {
-+		l.closed = true
-+		close(l.done)
++func (l *rateLimiter) isActive() bool {
++	if l == nil {
++		return false
 +	}
-+	l.mu.Unlock()
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return l.rate > 0
++}
++
++func (l *rateLimiter) setRate(rateBytesPerSec int64) {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++
++	now := time.Now()
++	if l.rate > 0 {
++		if elapsed := now.Sub(l.last).Seconds(); elapsed > 0 {
++			l.tokens += elapsed * l.rate
++			if l.tokens > l.burst {
++				l.tokens = l.burst
++			}
++		}
++	}
++	l.last = now
++
++	if rateBytesPerSec <= 0 {
++		l.rate = 0
++		l.burst = 0
++		l.tokens = 0
++		close(l.notify)
++		l.notify = make(chan struct{})
++		return
++	}
++
++	newRate := float64(rateBytesPerSec)
++	newBurst := math.Max(newRate, minBucketCapacity)
++	wasActive := l.rate > 0
++	if wasActive {
++		if l.tokens > newBurst {
++			l.tokens = newBurst
++		}
++	} else {
++		l.tokens = newBurst
++	}
++	l.rate = newRate
++	l.burst = newBurst
++	close(l.notify)
++	l.notify = make(chan struct{})
 +}
 +
 +func (l *rateLimiter) wait(ctx context.Context, n int64) {
@@ -207,7 +254,7 @@ index 0000000..7e55349
 +			return
 +		}
 +		l.mu.Lock()
-+		if l.closed {
++		if l.rate <= 0 {
 +			l.mu.Unlock()
 +			return
 +		}
@@ -243,6 +290,7 @@ index 0000000..7e55349
 +		if waitDur < time.Millisecond {
 +			waitDur = time.Millisecond
 +		}
++		notifyCh := l.notify
 +		l.mu.Unlock()
 +
 +		timer := time.NewTimer(waitDur)
@@ -250,18 +298,11 @@ index 0000000..7e55349
 +		case <-ctx.Done():
 +			timer.Stop()
 +			return
-+		case <-l.done:
++		case <-notifyCh:
 +			timer.Stop()
-+			return
++			continue
 +		case <-timer.C:
 +		}
-+	}
-+}
-+
-+func setGlobalRateLimiter(next *rateLimiter) {
-+	prev := globalRateLimiter.Swap(next)
-+	if prev != nil {
-+		prev.close()
 +	}
 +}
 +
@@ -270,7 +311,7 @@ index 0000000..7e55349
 +	if err != nil {
 +		if os.IsNotExist(err) && *lastRate != 0 {
 +			*lastRate = 0
-+			setGlobalRateLimiter(nil)
++			globalRateLimiter.setRate(0)
 +		}
 +		return
 +	}
@@ -290,20 +331,20 @@ index 0000000..7e55349
 +		return
 +	}
 +	*lastRate = rate
-+	if rate == 0 {
-+		setGlobalRateLimiter(nil)
-+		return
-+	}
-+	setGlobalRateLimiter(newRateLimiter(rate))
++	globalRateLimiter.setRate(rate)
 +}
 +
 +func waitRateLimit(ctx context.Context, n int64) {
 +	if n <= 0 {
 +		return
 +	}
-+	if l := globalRateLimiter.Load(); l != nil {
-+		l.wait(ctx, n)
-+	}
++	globalRateLimiter.wait(ctx, n)
++}
++
++// IsRateLimitActive reports whether rate limiting is globally active for
++// non-internal traffic in the given context.
++func IsRateLimitActive(ctx context.Context) bool {
++	return globalRateLimitEnabled && globalRateLimiter.isActive() && !isInternalAPITraffic(ctx)
 +}
 +
 +func isInternalAPITraffic(ctx context.Context) bool {
@@ -387,10 +428,10 @@ index 0000000..7e55349
 +}
 diff --git a/app/dispatcher/ratelimit_test.go b/app/dispatcher/ratelimit_test.go
 new file mode 100644
-index 0000000..a9fce20
+index 0000000..15267db
 --- /dev/null
 +++ b/app/dispatcher/ratelimit_test.go
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,326 @@
 +package dispatcher
 +
 +import (
@@ -402,38 +443,39 @@ index 0000000..a9fce20
 +
 +	"github.com/xtls/xray-core/common"
 +	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
 +	"github.com/xtls/xray-core/common/session"
 +	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/features/outbound"
 +	"github.com/xtls/xray-core/transport/pipe"
 +)
 +
 +func TestUpdateRateLimit(t *testing.T) {
-+	defer setGlobalRateLimiter(nil)
++	prev := globalRateLimitEnabled
++	globalRateLimitEnabled = true
++	defer func() {
++		globalRateLimitEnabled = prev
++		globalRateLimiter.setRate(0)
++	}()
 +
 +	dir := t.TempDir()
 +	path := filepath.Join(dir, "ratelimit")
 +
 +	var lastRate int64
 +	updateRateLimit(path, &lastRate)
-+	if globalRateLimiter.Load() != nil {
-+		t.Fatal("expected nil limiter when file does not exist")
++	if globalRateLimiter.isActive() {
++		t.Fatal("expected inactive limiter when file does not exist")
 +	}
 +
 +	if err := os.WriteFile(path, []byte("1048576\n"), 0o600); err != nil {
 +		t.Fatal(err)
 +	}
 +	updateRateLimit(path, &lastRate)
-+	l1 := globalRateLimiter.Load()
-+	if l1 == nil {
-+		t.Fatal("expected non-nil limiter for positive rate")
++	if !globalRateLimiter.isActive() {
++		t.Fatal("expected active limiter for positive rate")
 +	}
 +	if lastRate != 1048576 {
 +		t.Fatalf("expected lastRate 1048576, got %d", lastRate)
-+	}
-+
-+	updateRateLimit(path, &lastRate)
-+	if globalRateLimiter.Load() != l1 {
-+		t.Fatal("expected limiter pointer to remain unchanged when rate is unchanged")
 +	}
 +
 +	w := &rateLimitWriter{Writer: buf.Discard, Ctx: context.Background()}
@@ -444,20 +486,97 @@ index 0000000..a9fce20
 +		t.Fatal(err)
 +	}
 +	updateRateLimit(path, &lastRate)
-+	if globalRateLimiter.Load() != nil {
-+		t.Fatal("expected nil limiter when rate is 0")
++	if globalRateLimiter.isActive() {
++		t.Fatal("expected inactive limiter when rate is 0")
++	}
++}
++
++func TestSetRateClampTokens(t *testing.T) {
++	l := newRateLimiter()
++
++	// Initial activation sets tokens = newBurst.
++	l.setRate(1_000_000)
++	l.mu.Lock()
++	if l.rate != 1_000_000 || l.burst != 1_000_000 || l.tokens != 1_000_000 {
++		t.Fatalf("unexpected state after initial setRate: rate=%v burst=%v tokens=%v", l.rate, l.burst, l.tokens)
++	}
++	l.mu.Unlock()
++
++	// Lower rate clamps tokens to newBurst.
++	l.setRate(500_000)
++	l.mu.Lock()
++	if l.rate != 500_000 || l.burst != 500_000 || l.tokens > 500_000 {
++		t.Fatalf("unexpected state after lowering rate: rate=%v burst=%v tokens=%v", l.rate, l.burst, l.tokens)
++	}
++	// Drain tokens to 50.
++	l.tokens = 50
++	l.last = time.Now()
++	l.mu.Unlock()
++
++	// Increasing rate must NOT refill tokens to newBurst.
++	l.setRate(800_000)
++	l.mu.Lock()
++	if l.tokens > 1000 {
++		t.Fatalf("tokens refilled on rate increase: tokens=%v, want <= 1000", l.tokens)
++	}
++	l.mu.Unlock()
++
++	// Resetting to <= 0 disables and resets tokens.
++	l.setRate(0)
++	l.mu.Lock()
++	if l.rate != 0 || l.burst != 0 || l.tokens != 0 {
++		t.Fatalf("tokens not reset on zero rate: rate=%v burst=%v tokens=%v", l.rate, l.burst, l.tokens)
++	}
++	l.mu.Unlock()
++}
++
++func TestSetRateWaitersNoEscapeOnPositiveRateChange(t *testing.T) {
++	defer globalRateLimiter.setRate(0)
++
++	globalRateLimiter.setRate(100)
++	globalRateLimiter.mu.Lock()
++	globalRateLimiter.tokens = 0
++	globalRateLimiter.last = time.Now()
++	globalRateLimiter.mu.Unlock()
++
++	done := make(chan struct{})
++	go func() {
++		// Waiting for 10,000 bytes at ~100-200 B/s would take ~50-100 seconds.
++		waitRateLimit(context.Background(), 10000)
++		close(done)
++	}()
++
++	time.Sleep(30 * time.Millisecond)
++
++	// Change rate from 100 to 200 (positive to positive).
++	// Waiting goroutine must NOT escape immediately!
++	globalRateLimiter.setRate(200)
++
++	select {
++	case <-done:
++		t.Fatal("waiting goroutine escaped early on positive rate change")
++	case <-time.After(50 * time.Millisecond):
++		// Expected: goroutine is still waiting.
++	}
++
++	// Now set rate to 0 (unlimited): waiter must wake and return promptly.
++	globalRateLimiter.setRate(0)
++	select {
++	case <-done:
++		// Succeeded: woke promptly on rate 0.
++	case <-time.After(250 * time.Millisecond):
++		t.Fatal("waiting goroutine hung after rate was reset to 0")
 +	}
 +}
 +
 +func TestWaitRateLimitCtxCancel(t *testing.T) {
-+	defer setGlobalRateLimiter(nil)
++	defer globalRateLimiter.setRate(0)
 +
-+	l := newRateLimiter(100)
-+	// Drain initial burst so subsequent wait must sleep.
-+	l.mu.Lock()
-+	l.tokens = 0
-+	l.mu.Unlock()
-+	setGlobalRateLimiter(l)
++	globalRateLimiter.setRate(100)
++	globalRateLimiter.mu.Lock()
++	globalRateLimiter.tokens = 0
++	globalRateLimiter.last = time.Now()
++	globalRateLimiter.mu.Unlock()
 +
 +	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 +	defer cancel()
@@ -470,39 +589,14 @@ index 0000000..a9fce20
 +	}
 +}
 +
-+func TestWaitRateLimitResetToZero(t *testing.T) {
-+	defer setGlobalRateLimiter(nil)
-+
-+	l := newRateLimiter(100)
-+	l.mu.Lock()
-+	l.tokens = 0
-+	l.mu.Unlock()
-+	setGlobalRateLimiter(l)
-+
-+	done := make(chan time.Duration, 1)
-+	go func() {
-+		start := time.Now()
-+		waitRateLimit(context.Background(), 10000)
-+		done <- time.Since(start)
-+	}()
-+
-+	time.Sleep(25 * time.Millisecond)
-+	setGlobalRateLimiter(nil)
-+
-+	select {
-+	case elapsed := <-done:
-+		if elapsed > 250*time.Millisecond {
-+			t.Fatalf("waitRateLimit did not wake promptly on limiter reset: %v", elapsed)
-+		}
-+	case <-time.After(500 * time.Millisecond):
-+		t.Fatal("waitRateLimit hung after limiter was reset to nil")
-+	}
-+}
-+
 +func TestInternalAPIBypass(t *testing.T) {
 +	prev := globalRateLimitEnabled
 +	globalRateLimitEnabled = true
-+	defer func() { globalRateLimitEnabled = prev }()
++	defer func() {
++		globalRateLimitEnabled = prev
++		globalRateLimiter.setRate(0)
++	}()
++	globalRateLimiter.setRate(100000)
 +
 +	d := &DefaultDispatcher{}
 +
@@ -538,7 +632,11 @@ index 0000000..a9fce20
 +func TestWrapLinkUplinkAndNoDoubleWrap(t *testing.T) {
 +	prev := globalRateLimitEnabled
 +	globalRateLimitEnabled = true
-+	defer func() { globalRateLimitEnabled = prev }()
++	defer func() {
++		globalRateLimitEnabled = prev
++		globalRateLimiter.setRate(0)
++	}()
++	globalRateLimiter.setRate(100000)
 +
 +	r, w := pipe.New()
 +	normalLink := WrapLink(context.Background(), nil, nil, &transport.Link{Reader: r, Writer: w})
@@ -557,6 +655,107 @@ index 0000000..a9fce20
 +	}
 +	if _, ok := muxLink.Writer.(*rateLimitWriter); ok {
 +		t.Fatal("expected marked (mux sub-stream) WrapLink writer not to be double-wrapped")
++	}
++
++	d := &DefaultDispatcher{}
++	inLink, outLink := d.getLink(markedCtx)
++	if _, ok := inLink.Writer.(*rateLimitWriter); ok {
++		t.Fatal("expected marked getLink uplink writer not to be double-wrapped")
++	}
++	if _, ok := outLink.Writer.(*rateLimitWriter); ok {
++		t.Fatal("expected marked getLink downlink writer not to be double-wrapped")
++	}
++}
++
++type dummyOutboundManager struct {
++	outbound.Manager
++}
++
++func (d *dummyOutboundManager) GetDefaultHandler() outbound.Handler { return nil }
++func (d *dummyOutboundManager) GetHandler(string) outbound.Handler   { return nil }
++
++func TestDispatchLinkMarksContext(t *testing.T) {
++	prev := globalRateLimitEnabled
++	globalRateLimitEnabled = true
++	defer func() {
++		globalRateLimitEnabled = prev
++		globalRateLimiter.setRate(0)
++	}()
++	globalRateLimiter.setRate(100000)
++
++	d := &DefaultDispatcher{ohm: &dummyOutboundManager{}}
++	ctx := context.Background()
++	r, w := pipe.New()
++	link := &transport.Link{Reader: r, Writer: w}
++	dest := net.Destination{Network: net.Network_TCP, Address: net.LocalHostIP, Port: 80}
++
++	// DispatchLink wraps outbound and marks ctx
++	_ = d.DispatchLink(ctx, dest, link)
++
++	markedCtx := markRateLimitedContext(ctx)
++	inLink, outLink := d.getLink(markedCtx)
++	if _, ok := inLink.Writer.(*rateLimitWriter); ok {
++		t.Fatal("expected getLink on marked context to skip rate limit")
++	}
++	if _, ok := outLink.Writer.(*rateLimitWriter); ok {
++		t.Fatal("expected getLink on marked context to skip rate limit")
++	}
++}
++
++func TestIsRateLimitActive(t *testing.T) {
++	prev := globalRateLimitEnabled
++	defer func() {
++		globalRateLimitEnabled = prev
++		globalRateLimiter.setRate(0)
++	}()
++
++	globalRateLimitEnabled = false
++	globalRateLimiter.setRate(100000)
++	if IsRateLimitActive(context.Background()) {
++		t.Fatal("expected IsRateLimitActive = false when globalRateLimitEnabled = false")
++	}
++
++	globalRateLimitEnabled = true
++	globalRateLimiter.setRate(0)
++	if IsRateLimitActive(context.Background()) {
++		t.Fatal("expected IsRateLimitActive = false when rate is 0")
++	}
++
++	globalRateLimiter.setRate(100000)
++	if !IsRateLimitActive(context.Background()) {
++		t.Fatal("expected IsRateLimitActive = true when rate > 0 and normal context")
++	}
++
++	apiCtx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: apiInboundTag})
++	if IsRateLimitActive(apiCtx) {
++		t.Fatal("expected IsRateLimitActive = false for internal API traffic")
++	}
++}
++
++func TestSpliceCopyDisabledWhenRateLimitActive(t *testing.T) {
++	prev := globalRateLimitEnabled
++	globalRateLimitEnabled = true
++	defer func() {
++		globalRateLimitEnabled = prev
++		globalRateLimiter.setRate(0)
++	}()
++	globalRateLimiter.setRate(100000)
++
++	inbound := &session.Inbound{CanSpliceCopy: 1}
++	ctx := session.ContextWithInbound(context.Background(), inbound)
++
++	d := &DefaultDispatcher{}
++	d.getLink(ctx)
++	if inbound.CanSpliceCopy != 3 {
++		t.Fatalf("expected getLink to set CanSpliceCopy=3, got %d", inbound.CanSpliceCopy)
++	}
++
++	inbound2 := &session.Inbound{CanSpliceCopy: 1}
++	ctx2 := session.ContextWithInbound(context.Background(), inbound2)
++	r, w := pipe.New()
++	WrapLink(ctx2, nil, nil, &transport.Link{Reader: r, Writer: w})
++	if inbound2.CanSpliceCopy != 3 {
++		t.Fatalf("expected WrapLink to set CanSpliceCopy=3, got %d", inbound2.CanSpliceCopy)
 +	}
 +}
 diff --git a/app/dispatcher/stats.go b/app/dispatcher/stats.go
@@ -590,3 +789,22 @@ index 8fac019..126dcb0 100644
  	w.Counter.Add(int64(mb.Len()))
  	return w.Writer.WriteMultiBuffer(mb)
  }
+diff --git a/proxy/proxy.go b/proxy/proxy.go
+index ab7d7ab..82e94ab 100644
+--- a/proxy/proxy.go
++++ b/proxy/proxy.go
+@@ -739,8 +739,14 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
+ 			return readV(ctx, reader, writer, timer, readCounter)
+ 		}
+ 	}
++	if dispatcher.IsRateLimitActive(ctx) {
++		return readV(ctx, reader, writer, timer, readCounter)
++	}
+ 
+ 	for {
++		if dispatcher.IsRateLimitActive(ctx) {
++			return readV(ctx, reader, writer, timer, readCounter)
++		}
+ 		inbound := session.InboundFromContext(ctx)
+ 		outbounds := session.OutboundsFromContext(ctx)
+ 		splice := inbound.CanSpliceCopy == 1

@@ -135,6 +135,9 @@ func (n *Node) prepareCore(ctx context.Context, geodata any) {
 		_ = os.Remove(staged)
 		return
 	}
+	if ct := ActiveCPUThrottle(); ct != nil {
+		ct.SetSupported(HasRateLimitSupport(n.CoreLink))
+	}
 	st, _ := os.Stat(n.CoreCustom)
 	b, _ := json.MarshalIndent(coreMarker{u, got, st.Size(), st.ModTime().UnixMilli(), version, time.Now().UTC().Format(time.RFC3339Nano)}, "", "  ")
 	_ = os.WriteFile(marker, b, 0o644)
@@ -167,6 +170,9 @@ func (n *Node) restoreStockCore() {
 		n.Log.Error("Failed to restore the bundled core: " + err.Error())
 		return
 	}
+	if ct := ActiveCPUThrottle(); ct != nil {
+		ct.SetSupported(HasRateLimitSupport(n.CoreLink))
+	}
 	_ = os.Remove(filepath.Join(filepath.Dir(n.CoreCustom), ".rw-core.json"))
 	_ = os.Remove(n.CoreCustom)
 	n.Log.Warn("No core configured, rolled back to the bundled one.")
@@ -196,6 +202,9 @@ func (n *Node) EnsureCoreLink() {
 		err = n.pointCoreLinkAt(n.CoreStock)
 		if err == nil {
 			_ = os.Remove(filepath.Join(filepath.Dir(n.CoreCustom), ".rw-core.json"))
+			if ct := ActiveCPUThrottle(); ct != nil {
+				ct.SetSupported(HasRateLimitSupport(n.CoreLink))
+			}
 			return
 		}
 	}

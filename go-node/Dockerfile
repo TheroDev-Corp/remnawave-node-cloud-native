@@ -15,12 +15,14 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS xray
 ARG XRAY_CORE_VERSION=v26.7.28
+ARG XRAY_CORE_COMMIT=5ca6f4b7d4dc20a881d4330e498892697627ec0c
 ARG UPSTREAM_REPO=XTLS
 ARG TARGETOS TARGETARCH
 COPY patches/xray-ratelimit.patch /tmp/xray-ratelimit.patch
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     apk add --no-cache git curl ca-certificates \
     && git clone --depth 1 --branch "${XRAY_CORE_VERSION}" "https://github.com/${UPSTREAM_REPO}/Xray-core.git" /tmp/xray-src \
+    && test "$(git -C /tmp/xray-src rev-parse HEAD)" = "${XRAY_CORE_COMMIT}" \
     && git -C /tmp/xray-src apply /tmp/xray-ratelimit.patch \
     && mkdir -p /rootfs/usr/local/bin /rootfs/usr/local/share/xray /rootfs/var/log/xray /rootfs/var/lib/rw-core /rootfs/tmp /rootfs/etc/ssl/certs \
     && (cd /tmp/xray-src && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
