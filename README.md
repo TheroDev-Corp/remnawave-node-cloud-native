@@ -92,25 +92,25 @@ flowchart TD
     end
 
     %% Управление
-    Panel -->|mTLS :2222 (RS256 JWT, zstd)| SvcApi
-    SvcApi -->|Трафик только на лидера| P1Node
+    Panel -->|"mTLS :2222 (RS256 JWT, zstd)"| SvcApi
+    SvcApi -->|"Трафик только на лидера"| P1Node
 
     %% Мониторинг
-    Prometheus -.->|GET /metrics :9464| P1Prom
-    Prometheus -.->|GET /metrics :9464| P2Prom
+    Prometheus -.->|"GET /metrics :9464"| P1Prom
+    Prometheus -.->|"GET /metrics :9464"| P2Prom
 
     %% Координация
-    P1Node <-->|Heartbeat / Renew| K8sLease
-    P2Node -.->|Watch / Acquire on Fail| K8sLease
+    P1Node <-->|"Heartbeat / Renew"| K8sLease
+    P2Node -.->|"Watch / Acquire on Fail"| K8sLease
 
     %% Синхронизация между репликами
-    P1Node -->|PeerSync: HMAC-signed mTLS| SvcHeadless
-    SvcHeadless -->|Replicate State & Journal :3000| P2Node
-    P2Node -.->|Catch-Up Snapshot & yield :3000| P1Node
+    P1Node -->|"PeerSync: HMAC-signed mTLS"| SvcHeadless
+    SvcHeadless -->|"Replicate State & Journal :3000"| P2Node
+    P2Node -.->|"Catch-Up Snapshot & yield :3000"| P1Node
 
     %% Клиентский трафик
-    ClientTCP --> Traefik --> SvcInbound -->|role: leader| P1Xray
-    ClientUDP --> SvcDirect -->|role: leader| P1Xray
+    ClientTCP --> Traefik --> SvcInbound -->|"role: leader"| P1Xray
+    ClientUDP --> SvcDirect -->|"role: leader"| P1Xray
 ```
 
 ---
