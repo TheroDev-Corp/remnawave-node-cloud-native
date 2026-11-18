@@ -227,6 +227,9 @@ There are no per-user labels. User traffic is one sum and online users a count, 
 | `remnanode_xray_balancer_targets`, `remnanode_xray_balancer_target` | gauge | `balancer` (+ `outbound`) | `RoutingService.GetBalancerInfo`: what the strategy picks from now; 0 targets means the fallback |
 | `remnanode_xray_balancer_override` | gauge | `balancer`, `outbound` | manual `OverrideBalancerTarget` |
 | `remnanode_metrics_collector_success` | gauge | `collector` | 0 when a part of the scrape failed |
+| `remnanode_node_cpu_usage_ratio` | gauge | | host / cgroup CPU usage ratio (0..1) sampled from `/proc/stat` and cgroups |
+| `remnanode_cpu_throttle_active` | gauge | | 1 if adaptive CPU throttling is currently active, 0 otherwise |
+| `remnanode_cpu_throttle_rate_bytes_per_sec` | gauge | | current Xray rate limit in bytes/sec (0 = unlimited) |
 
 How it stays out of the panel's way:
 - **Counters the panel resets.** The panel polls stats with `reset:true`, so xray's counters keep dropping to zero. With metrics on, every `QueryStats` (the panel's and the scrape's) goes through one tracker: a reset read moves the drained values into a running total, a scrape reads without reset. The exported value is that total plus the live counter, so it only goes up and the panel still gets every byte. A counter that shrinks or vanishes (xray restart, user removed) has its last value folded in first. The tracker lock spans the gRPC call, so a scrape and a panel reset can't interleave. The totals start at zero when the node process starts, which Prometheus treats as a counter reset.
@@ -234,6 +237,27 @@ How it stays out of the panel's way:
 - Scrapes are serialized and time out after 10 s. Each one costs a handful of gRPC calls: `GetSysStats`, three `QueryStats`, `GetAllOnlineUsers`, `GetOutboundStatus`, and one `GetBalancerInfo` per balancer.
 
 `internal/node/metrics_e2e_test.go` checks all of this against a real xray: burstObservatory with two live relays and a dead one behind leastLoad and leastPing balancers, real downloads with panel resets between scrapes, online users (the client leaves from the host's LAN address), and an xray SIGKILL. Every scrape is parsed by a strict reader of the text format.
+
+## Adaptive CPU Throttling (AIMD)
+
+When CPU usage spikes on a node due to cryptographic overhead or connection surges, the adaptive userspace CPU throttling controller engages an Additive Increase / Multiplicative Decrease (AIMD) token-bucket speed limit on Xray traffic. It runs strictly as `nobody:nogroup` (65534:65534) with zero privileges and drops all Linux capabilities, communicating with the patched Xray dispatcher via atomic updates to `/tmp/rw-ratelimit`.
+
+### Environment Variables
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `CPU_THROTTLE_ENABLED` | bool | `false` | Enable the CPU throttle controller |
+| `CPU_THROTTLE_HIGH_PCT` | int | `90` | Upper CPU usage threshold percent (50..99) to engage or step down speed |
+| `CPU_THROTTLE_LOW_PCT` | int | `75` | Lower CPU usage threshold percent (0 < low < high) to step up speed or release |
+| `CPU_THROTTLE_RATE_MBPS` | int | `50` | Initial rate ceiling (Mbps) when throttling engages |
+| `CPU_THROTTLE_MIN_MBPS` | int | `10` | Minimum rate limit floor (Mbps) for AIMD decrease steps |
+| `CPU_THROTTLE_CONTROL_FILE` | string | `/tmp/rw-ratelimit` | Path to the rate limit control file read by Xray |
+
+### Metrics
+
+- `remnanode_node_cpu_usage_ratio`: Gauge reporting host / cgroup CPU usage ratio (0..1).
+- `remnanode_cpu_throttle_active`: Gauge (1 if active, 0 if inactive/unlimited).
+- `remnanode_cpu_throttle_rate_bytes_per_sec`: Gauge reporting current speed limit in bytes per second (0 = unlimited).
 
 ## Parity checklist
 

@@ -55,6 +55,11 @@ func main() {
 	defer stop()
 
 	proc := xray.NewProcess(cfg.XrayBinary, "/var/log/xray/current", log)
+	if cfg.CPUThrottleEnabled {
+		proc.SetRatelimitFile(cfg.CPUThrottleControlFile)
+	}
+	cpuThrottle := node.StartCPUThrottle(cfg, log)
+	defer cpuThrottle.Stop()
 	listen := apiListen(cfg)
 	xapi, err := xray.Dial(listen)
 	if err != nil {
@@ -63,6 +68,17 @@ func main() {
 	}
 	stopNet := make(chan struct{})
 	defer close(stopNet)
+	netStats := node.StartNetStats(stopNet)
+	if cpuThrottle != nil && netStats != nil {
+		cpuThrottle.SetThroughputFunc(func() float64 {
+			r := netStats.Default()
+			if r == nil {
+				return -1
+			}
+			maxBps := max(r.RxBytesPerSec, r.TxBytesPerSec)
+			return maxBps / node.BytesPerMbps
+		})
+	}
 	// HA: Lease election when enabled (else always leader), peer sync when a
 	// headless Service is configured.
 	var state ha.State = ha.Standalone{ID: cfg.PodName}
@@ -74,10 +90,13 @@ func main() {
 	} else {
 		log.Info("K8s Leader Election disabled, running as standalone Leader.")
 	}
-	n := node.New(cfg, log, state, proc, xapi, listen, node.StartNetStats(stopNet))
+	n := node.New(cfg, log, state, proc, xapi, listen, netStats)
 	if cfg.XrayBinary == config.DefaultXrayBinary {
 		// The image's rw-core links to the switchable /var/lib/rw-core/current.
 		n.EnsureCoreLink()
+	}
+	if cpuThrottle != nil {
+		cpuThrottle.SetSupported(node.HasRateLimitSupport(cfg.XrayBinary))
 	}
 	if _, err := os.Stat(asn.DefaultPath); err != nil {
 		log.Warn(asn.DefaultPath + " not found — ASN lookup disabled")
@@ -194,6 +213,7 @@ func main() {
 		_ = s.Shutdown(shutdownCtx)
 	}
 	n.StopXray(false, false)
+	cpuThrottle.Stop()
 }
 
 // apiListen is the xray api inbound address: the abstract socket the TS

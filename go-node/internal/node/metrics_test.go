@@ -225,3 +225,25 @@ func checkExposition(t *testing.T, body []byte) map[string]float64 {
 	}
 	return out
 }
+
+func TestCPUThrottleMetrics(t *testing.T) {
+	ct := newCPUThrottle(testThrottleConfig(""), nil, "", "")
+	ct.mu.Lock()
+	ct.cpuRatio = 0.875
+	ct.active = true
+	ct.rateBytes = 6250000
+	ct.mu.Unlock()
+
+	w := &promWriter{}
+	writeCPUThrottleMetrics(w, ct)
+	got := checkExposition(t, w.Bytes())
+	if got["remnanode_node_cpu_usage_ratio"] != 0.875 {
+		t.Errorf("cpu ratio = %v, want 0.875", got["remnanode_node_cpu_usage_ratio"])
+	}
+	if got["remnanode_cpu_throttle_active"] != 1 {
+		t.Errorf("throttle active = %v, want 1", got["remnanode_cpu_throttle_active"])
+	}
+	if got["remnanode_cpu_throttle_rate_bytes_per_sec"] != 6250000 {
+		t.Errorf("rate bytes = %v, want 6250000", got["remnanode_cpu_throttle_rate_bytes_per_sec"])
+	}
+}
