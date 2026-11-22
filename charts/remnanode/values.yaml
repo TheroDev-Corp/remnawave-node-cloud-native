@@ -57,6 +57,15 @@ ioThrottling:
   # (Major:minor can be determined via 'cat /proc/diskstats' or 'stat -c "%t:%T" /dev/vda2')
   cgroupIoMax: ''
 
+# Adaptive userspace CPU-based speed throttling (zero-capability, nobody:nogroup compatible)
+cpuThrottling:
+  enabled: false
+  highCpuPercent: 90
+  lowCpuPercent: 75
+  # Fallback traffic estimate when Xray has no fresh sample (Mbps).
+  rateMbps: 50
+  minRateMbps: 10
+
 # In-memory tmpfs mounts to prevent disk write saturation
 tmpfs:
   enabled: true
