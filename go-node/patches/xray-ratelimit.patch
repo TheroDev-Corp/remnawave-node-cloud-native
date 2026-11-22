@@ -1,121 +1,46 @@
 diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
-index 2717df5..4874358 100644
+index 2717df5..b46b8e1 100644
 --- a/app/dispatcher/default.go
 +++ b/app/dispatcher/default.go
-@@ -158,24 +158,36 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
- 		user = sessionInbound.User
- 	}
- 
-+	skipRL := !globalRateLimitEnabled || isInternalAPITraffic(ctx) || isRateLimitedContext(ctx)
-+	if !skipRL && globalRateLimiter.isActive() && sessionInbound != nil {
-+		sessionInbound.CanSpliceCopy = 3
-+	}
-+	uplinkWrapped := false
-+	downlinkWrapped := false
- 	if user != nil && len(user.Email) > 0 {
- 		p := d.policy.ForLevel(user.Level)
- 		if p.Stats.UserUplink {
- 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
- 			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
- 				inboundLink.Writer = &SizeStatWriter{
--					Counter: c,
--					Writer:  inboundLink.Writer,
-+					Counter:       c,
-+					Writer:        inboundLink.Writer,
-+					Ctx:           ctx,
-+					SkipRateLimit: skipRL,
- 				}
-+				uplinkWrapped = true
- 			}
- 		}
- 		if p.Stats.UserDownlink {
- 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
- 			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
- 				outboundLink.Writer = &SizeStatWriter{
--					Counter: c,
--					Writer:  outboundLink.Writer,
-+					Counter:       c,
-+					Writer:        outboundLink.Writer,
-+					Ctx:           ctx,
-+					SkipRateLimit: skipRL,
- 				}
-+				downlinkWrapped = true
- 			}
- 		}
- 
-@@ -183,6 +195,14 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
- 			trackOnlineIP(ctx, d.stats, user.Email, sessionInbound.Source.Address.String())
+@@ -184,6 +184,11 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
  		}
  	}
-+	if !skipRL {
-+		if !uplinkWrapped {
-+			inboundLink.Writer = &rateLimitWriter{Writer: inboundLink.Writer, Ctx: ctx}
-+		}
-+		if !downlinkWrapped {
-+			outboundLink.Writer = &rateLimitWriter{Writer: outboundLink.Writer, Ctx: ctx}
-+		}
-+	}
  
++	if ShouldPace(ctx) && !isRateLimitedContext(ctx) {
++		flow := new(rateFlow)
++		inboundLink.Writer = newPacedWriter(ctx, inboundLink.Writer, flow)
++		outboundLink.Writer = newPacedWriter(ctx, outboundLink.Writer, flow)
++	}
  	return inboundLink, outboundLink
  }
-@@ -196,6 +216,11 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
  
- 	link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
- 
-+	skipRL := !globalRateLimitEnabled || isInternalAPITraffic(ctx) || isRateLimitedContext(ctx)
-+	if !skipRL && globalRateLimiter.isActive() && sessionInbound != nil {
-+		sessionInbound.CanSpliceCopy = 3
-+	}
-+	downlinkWrapped := false
- 	if user != nil && len(user.Email) > 0 {
- 		p := policyManager.ForLevel(user.Level)
- 		if p.Stats.UserUplink {
-@@ -208,15 +233,28 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
- 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
- 			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
- 				link.Writer = &SizeStatWriter{
--					Counter: c,
--					Writer:  link.Writer,
-+					Counter:       c,
-+					Writer:        link.Writer,
-+					Ctx:           ctx,
-+					SkipRateLimit: skipRL,
- 				}
-+				downlinkWrapped = true
- 			}
- 		}
- 		if p.Stats.UserOnline {
- 			trackOnlineIP(ctx, statsManager, user.Email, sessionInbound.Source.Address.String())
+@@ -218,6 +223,11 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
  		}
  	}
-+	if !skipRL {
-+		if _, ok := link.Reader.(*rateLimitReader); !ok {
-+			link.Reader = &rateLimitReader{Reader: link.Reader.(buf.TimeoutReader), Ctx: ctx}
-+		}
-+		if !downlinkWrapped {
-+			if _, ok := link.Writer.(*rateLimitWriter); !ok {
-+				link.Writer = &rateLimitWriter{Writer: link.Writer, Ctx: ctx}
-+			}
-+		}
-+	}
  
++	if ShouldPace(ctx) && !isRateLimitedContext(ctx) {
++		flow := new(rateFlow)
++		link.Reader = newPacedReader(ctx, link.Reader.(buf.TimeoutReader), flow)
++		link.Writer = newPacedWriter(ctx, link.Writer, flow)
++	}
  	return link
  }
-@@ -284,6 +322,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
+ 
+@@ -284,6 +294,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
  
  	sniffingRequest := content.SniffingRequest
  	inbound, outbound := d.getLink(ctx)
-+	if globalRateLimitEnabled && !isInternalAPITraffic(ctx) {
++	if ShouldPace(ctx) && !isRateLimitedContext(ctx) {
 +		ctx = markRateLimitedContext(ctx)
 +	}
  	if !sniffingRequest.Enabled {
  		go d.routedDispatch(ctx, outbound, destination)
  	} else {
-@@ -339,6 +380,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
+@@ -339,6 +352,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
  		ctx = session.ContextWithContent(ctx, content)
  	}
  	outbound = WrapLink(ctx, d.policy, d.stats, outbound)
-+	if globalRateLimitEnabled && !isInternalAPITraffic(ctx) {
++	if ShouldPace(ctx) && !isRateLimitedContext(ctx) {
 +		ctx = markRateLimitedContext(ctx)
 +	}
  	sniffingRequest := content.SniffingRequest
@@ -123,19 +48,22 @@ index 2717df5..4874358 100644
  		d.routedDispatch(ctx, outbound, destination)
 diff --git a/app/dispatcher/ratelimit.go b/app/dispatcher/ratelimit.go
 new file mode 100644
-index 0000000..c8e0d09
+index 0000000..529d507
 --- /dev/null
 +++ b/app/dispatcher/ratelimit.go
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,293 @@
 +package dispatcher
 +
 +import (
 +	"context"
-+	"math"
++	"fmt"
 +	"os"
++	"path/filepath"
 +	"strconv"
 +	"strings"
 +	"sync"
++	"sync/atomic"
++
 +	"time"
 +
 +	"github.com/xtls/xray-core/common"
@@ -144,11 +72,11 @@ index 0000000..c8e0d09
 +)
 +
 +const (
-+	rateLimitEnvVar       = "XRAY_RATELIMIT_FILE"
++	rateLimitEnvVar       = "XRAY_RATELIMIT_FILE_V2"
 +	rateLimitPollInterval = 500 * time.Millisecond
-+	minBucketCapacity     = 64 * 1024
-+	apiInboundTag         = "REMNAWAVE_API_INBOUND"
-+	apiOutboundTag        = "REMNAWAVE_API"
++
++	apiInboundTag  = "REMNAWAVE_API_INBOUND"
++	apiOutboundTag = "REMNAWAVE_API"
 +)
 +
 +type rateLimitMarkKey struct{}
@@ -161,149 +89,30 @@ index 0000000..c8e0d09
 +func init() {
 +	path := os.Getenv(rateLimitEnvVar)
 +	if path == "" {
++		path = os.Getenv("XRAY_RATELIMIT_FILE")
++	} // older node supervisors
++	if path == "" {
 +		return
 +	}
 +	globalRateLimitEnabled = true
++	_ = os.Remove(path + ".traffic") // The preceding core may have exited between samples.
 +	var lastRate int64
++	last := time.Now()
++	var prev uint64
 +	updateRateLimit(path, &lastRate)
 +	go func() {
 +		ticker := time.NewTicker(rateLimitPollInterval)
 +		defer ticker.Stop()
-+		for range ticker.C {
++		for now := range ticker.C {
 +			updateRateLimit(path, &lastRate)
++			if elapsed := now.Sub(last); elapsed >= 900*time.Millisecond {
++				total := transferred.Load()
++				bps := int64(float64(total-prev) / elapsed.Seconds())
++				publishTraffic(path+".traffic", now, bps, globalRateLimiter.queued())
++				last, prev = now, total
++			}
 +		}
 +	}()
-+}
-+
-+// rateLimiter is a context-aware token bucket limiter.
-+type rateLimiter struct {
-+	mu     sync.Mutex
-+	rate   float64
-+	burst  float64
-+	tokens float64
-+	last   time.Time
-+	notify chan struct{}
-+}
-+
-+func newRateLimiter() *rateLimiter {
-+	return &rateLimiter{
-+		last:   time.Now(),
-+		notify: make(chan struct{}),
-+	}
-+}
-+
-+func (l *rateLimiter) isActive() bool {
-+	if l == nil {
-+		return false
-+	}
-+	l.mu.Lock()
-+	defer l.mu.Unlock()
-+	return l.rate > 0
-+}
-+
-+func (l *rateLimiter) setRate(rateBytesPerSec int64) {
-+	l.mu.Lock()
-+	defer l.mu.Unlock()
-+
-+	now := time.Now()
-+	if l.rate > 0 {
-+		if elapsed := now.Sub(l.last).Seconds(); elapsed > 0 {
-+			l.tokens += elapsed * l.rate
-+			if l.tokens > l.burst {
-+				l.tokens = l.burst
-+			}
-+		}
-+	}
-+	l.last = now
-+
-+	if rateBytesPerSec <= 0 {
-+		l.rate = 0
-+		l.burst = 0
-+		l.tokens = 0
-+		close(l.notify)
-+		l.notify = make(chan struct{})
-+		return
-+	}
-+
-+	newRate := float64(rateBytesPerSec)
-+	newBurst := math.Max(newRate, minBucketCapacity)
-+	wasActive := l.rate > 0
-+	if wasActive {
-+		if l.tokens > newBurst {
-+			l.tokens = newBurst
-+		}
-+	} else {
-+		l.tokens = newBurst
-+	}
-+	l.rate = newRate
-+	l.burst = newBurst
-+	close(l.notify)
-+	l.notify = make(chan struct{})
-+}
-+
-+func (l *rateLimiter) wait(ctx context.Context, n int64) {
-+	if n <= 0 {
-+		return
-+	}
-+	if ctx == nil {
-+		ctx = context.Background()
-+	}
-+	remaining := float64(n)
-+	for remaining > 0 {
-+		if ctx.Err() != nil {
-+			return
-+		}
-+		l.mu.Lock()
-+		if l.rate <= 0 {
-+			l.mu.Unlock()
-+			return
-+		}
-+		now := time.Now()
-+		if elapsed := now.Sub(l.last).Seconds(); elapsed > 0 {
-+			l.tokens += elapsed * l.rate
-+			if l.tokens > l.burst {
-+				l.tokens = l.burst
-+			}
-+			l.last = now
-+		}
-+		if l.tokens >= 1 {
-+			take := remaining
-+			if take > l.tokens {
-+				take = l.tokens
-+			}
-+			l.tokens -= take
-+			remaining -= take
-+			if remaining <= 0 {
-+				l.mu.Unlock()
-+				return
-+			}
-+		}
-+		need := remaining
-+		if need > l.burst {
-+			need = l.burst
-+		}
-+		need -= l.tokens
-+		if need < 1 {
-+			need = 1
-+		}
-+		waitDur := time.Duration(need / l.rate * float64(time.Second))
-+		if waitDur < time.Millisecond {
-+			waitDur = time.Millisecond
-+		}
-+		notifyCh := l.notify
-+		l.mu.Unlock()
-+
-+		timer := time.NewTimer(waitDur)
-+		select {
-+		case <-ctx.Done():
-+			timer.Stop()
-+			return
-+		case <-notifyCh:
-+			timer.Stop()
-+			continue
-+		case <-timer.C:
-+		}
-+	}
 +}
 +
 +func updateRateLimit(path string, lastRate *int64) {
@@ -334,17 +143,9 @@ index 0000000..c8e0d09
 +	globalRateLimiter.setRate(rate)
 +}
 +
-+func waitRateLimit(ctx context.Context, n int64) {
-+	if n <= 0 {
-+		return
-+	}
-+	globalRateLimiter.wait(ctx, n)
-+}
-+
-+// IsRateLimitActive reports whether rate limiting is globally active for
-+// non-internal traffic in the given context.
-+func IsRateLimitActive(ctx context.Context) bool {
-+	return globalRateLimitEnabled && globalRateLimiter.isActive() && !isInternalAPITraffic(ctx)
++// ShouldPace keeps managed connections on the observable copy path for their lifetime.
++func ShouldPace(ctx context.Context) bool {
++	return globalRateLimitEnabled && !isInternalAPITraffic(ctx)
 +}
 +
 +func isInternalAPITraffic(ctx context.Context) bool {
@@ -380,62 +181,271 @@ index 0000000..c8e0d09
 +	return v
 +}
 +
++var transferred atomic.Uint64
++
++func publishTraffic(path string, now time.Time, bps int64, queued int) {
++	f, err := os.CreateTemp(filepath.Dir(path), ".rw-traffic-")
++	if err != nil {
++		return
++	}
++	defer os.Remove(f.Name())
++	_, err = fmt.Fprintf(f, "%d %d %d\n", now.UnixNano(), bps, queued)
++	closeErr := f.Close()
++	if err == nil && closeErr == nil {
++		_ = os.Rename(f.Name(), path)
++	}
++}
++
 +type rateLimitWriter struct {
 +	Writer buf.Writer
 +	Ctx    context.Context
++	flow   *rateFlow
++	cancel context.CancelFunc
++}
++
++// Timeout-only XUDP links survive the cancellation of the mux transport.
++// Closing or interrupting the logical direction still cancels its grants.
++func pacingContext(parent context.Context) (context.Context, context.CancelFunc) {
++	if session.TimeoutOnlyFromContext(parent) {
++		parent = context.WithoutCancel(parent)
++	}
++	return context.WithCancel(parent)
++}
++
++func newPacedWriter(parent context.Context, writer buf.Writer, flow *rateFlow) *rateLimitWriter {
++	ctx, cancel := pacingContext(parent)
++	return &rateLimitWriter{Writer: writer, Ctx: ctx, flow: flow, cancel: cancel}
++}
++
++// Keep datagrams intact when returning part of a MultiBuffer. An oversized
++// datagram acquires multiple grants and is passed downstream in one piece.
++func batchSize(mb buf.MultiBuffer) int {
++	if globalRateLimiter.isActive() {
++		var size int64
++		for i, b := range mb {
++			size += int64(b.Len())
++			if i > 0 && size > quantum {
++				return i
++			}
++		}
++	}
++	return len(mb)
 +}
 +
 +func (w *rateLimitWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-+	waitRateLimit(w.Ctx, int64(mb.Len()))
-+	return w.Writer.WriteMultiBuffer(mb)
++	if len(mb) == 0 {
++		return w.Writer.WriteMultiBuffer(mb)
++	}
++	for len(mb) > 0 {
++		count := batchSize(mb)
++		batch := mb[:count:count]
++		n := int64(batch.Len())
++		if err := globalRateLimiter.wait(w.Ctx, w.flow, n); err != nil {
++			buf.ReleaseMulti(mb)
++			return err
++		}
++		mb = mb[count:]
++		if err := w.Writer.WriteMultiBuffer(batch); err != nil {
++			buf.ReleaseMulti(mb)
++			return err
++		}
++		transferred.Add(uint64(n))
++	}
++	return nil
 +}
-+
 +func (w *rateLimitWriter) Close() error {
++	w.cancel()
 +	return common.Close(w.Writer)
 +}
-+
 +func (w *rateLimitWriter) Interrupt() {
++	w.cancel()
 +	common.Interrupt(w.Writer)
 +}
 +
 +type rateLimitReader struct {
 +	Reader buf.TimeoutReader
-+	Ctx    context.Context
++	ctx    context.Context
++	cancel context.CancelFunc
++	flow   *rateFlow
++
++	// The link has one reader. Close/Interrupt may discard a buffered tail concurrently.
++	mu          sync.Mutex
++	pending     buf.MultiBuffer
++	trailingErr error
++	prepaid     int64 // granted bytes retained across a timed-out read
++}
++
++func newPacedReader(parent context.Context, reader buf.TimeoutReader, flow *rateFlow) *rateLimitReader {
++	ctx, cancel := pacingContext(parent)
++	return &rateLimitReader{Reader: reader, ctx: ctx, cancel: cancel, flow: flow}
++}
++func (r *rateLimitReader) read(ctx context.Context, fetch func() (buf.MultiBuffer, error)) (buf.MultiBuffer, error) {
++	if err := r.ctx.Err(); err != nil {
++		return nil, err
++	}
++	r.mu.Lock()
++	if len(r.pending) == 0 {
++		r.mu.Unlock()
++		mb, err := fetch()
++		r.mu.Lock()
++		r.pending, r.trailingErr = mb, err
++	}
++	if err := r.ctx.Err(); err != nil {
++		r.pending = buf.ReleaseMulti(r.pending)
++		r.mu.Unlock()
++		return nil, err
++	}
++	defer r.mu.Unlock()
++	n := batchSize(r.pending)
++	mb := r.pending[:n:n]
++	size := int64(mb.Len())
++	if size > 0 {
++		remaining := size - r.prepaid
++		if err := globalRateLimiter.waitRemaining(ctx, r.flow, &remaining); err != nil {
++			r.prepaid = size - remaining
++			if r.ctx.Err() == nil && err == context.DeadlineExceeded {
++				return nil, buf.ErrReadTimeout
++			}
++			r.pending = buf.ReleaseMulti(r.pending)
++			return nil, err
++		}
++	}
++	r.prepaid = 0
++	r.pending = r.pending[n:]
++	var err error
++	if len(r.pending) == 0 {
++		r.pending = nil
++		err, r.trailingErr = r.trailingErr, nil
++	}
++	transferred.Add(uint64(size))
++	return mb, err
 +}
 +
 +func (r *rateLimitReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-+	mb, err := r.Reader.ReadMultiBuffer()
-+	if err == nil && !mb.IsEmpty() {
-+		waitRateLimit(r.Ctx, int64(mb.Len()))
-+	}
-+	return mb, err
++	return r.read(r.ctx, r.Reader.ReadMultiBuffer)
++}
++func (r *rateLimitReader) ReadMultiBufferTimeout(t time.Duration) (buf.MultiBuffer, error) {
++	deadline := time.Now().Add(t)
++	ctx, cancel := context.WithDeadline(r.ctx, deadline)
++	defer cancel()
++	return r.read(ctx, func() (buf.MultiBuffer, error) { return r.Reader.ReadMultiBufferTimeout(time.Until(deadline)) })
 +}
 +
-+func (r *rateLimitReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.MultiBuffer, error) {
-+	mb, err := r.Reader.ReadMultiBufferTimeout(timeout)
-+	if err == nil && !mb.IsEmpty() {
-+		waitRateLimit(r.Ctx, int64(mb.Len()))
-+	}
-+	return mb, err
++func (r *rateLimitReader) stop() {
++	r.cancel()
++	r.mu.Lock()
++	r.pending = buf.ReleaseMulti(r.pending)
++	r.mu.Unlock()
 +}
-+
 +func (r *rateLimitReader) Close() error {
++	r.stop()
 +	return common.Close(r.Reader)
 +}
-+
 +func (r *rateLimitReader) Interrupt() {
++	r.stop()
 +	common.Interrupt(r.Reader)
 +}
-diff --git a/app/dispatcher/ratelimit_test.go b/app/dispatcher/ratelimit_test.go
+diff --git a/app/dispatcher/ratelimit_lifecycle_test.go b/app/dispatcher/ratelimit_lifecycle_test.go
 new file mode 100644
-index 0000000..15267db
+index 0000000..405aa04
 --- /dev/null
-+++ b/app/dispatcher/ratelimit_test.go
-@@ -0,0 +1,326 @@
++++ b/app/dispatcher/ratelimit_lifecycle_test.go
+@@ -0,0 +1,82 @@
 +package dispatcher
 +
 +import (
 +	"context"
++	"io"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++
++	"github.com/xtls/xray-core/transport"
++)
++
++func (d *DefaultDispatcher) PacedTestLinks(ctx context.Context) (*transport.Link, *transport.Link) {
++	return d.getLink(ctx)
++}
++func EnablePacingForTest() (func(int64), func()) {
++	old := globalRateLimitEnabled
++	globalRateLimitEnabled = true
++	return globalRateLimiter.setRate, func() { globalRateLimitEnabled = old; globalRateLimiter.setRate(0) }
++}
++
++type delayedPacket struct{ calls int }
++
++func (p *delayedPacket) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	p.calls++
++	return buf.MultiBuffer{buf.FromBytes([]byte("packet"))}, io.EOF
++}
++func (p *delayedPacket) ReadMultiBufferTimeout(time.Duration) (buf.MultiBuffer, error) {
++	time.Sleep(35 * time.Millisecond)
++	return p.ReadMultiBuffer()
++}
++
++func TestPacedReadUsesOneDeadlineAndRetainsPacket(t *testing.T) {
++	globalRateLimiter.setRate(1)
++	defer globalRateLimiter.setRate(0)
++	source := new(delayedPacket)
++	r := newPacedReader(context.Background(), source, new(rateFlow))
++	defer r.Close()
++	start := time.Now()
++	mb, err := r.ReadMultiBufferTimeout(60 * time.Millisecond)
++	if len(mb) != 0 || err != buf.ErrReadTimeout || time.Since(start) > 85*time.Millisecond {
++		t.Fatalf("timed read: %v after %v", err, time.Since(start))
++	}
++	globalRateLimiter.setRate(0)
++	mb, err = r.ReadMultiBuffer()
++	defer buf.ReleaseMulti(mb)
++	if source.calls != 1 || mb.String() != "packet" || err != io.EOF {
++		t.Fatalf("retry: calls=%d data=%q err=%v", source.calls, mb.String(), err)
++	}
++}
++
++type oneDatagram struct {
++	buf.TimeoutReader
++	payload []byte
++}
++
++func (p oneDatagram) ReadMultiBufferTimeout(time.Duration) (buf.MultiBuffer, error) {
++	return buf.MultiBuffer{buf.FromBytes(p.payload)}, io.EOF
++}
++
++func TestTimedReadRetainsPartialGrant(t *testing.T) {
++	globalRateLimiter.setRate(1)
++	defer globalRateLimiter.setRate(0)
++	globalRateLimiter.mu.Lock()
++	globalRateLimiter.tokens = quantum
++	globalRateLimiter.mu.Unlock()
++	r := newPacedReader(context.Background(), oneDatagram{payload: make([]byte, quantum+12)}, new(rateFlow))
++	defer r.Close()
++	mb, err := r.ReadMultiBufferTimeout(20 * time.Millisecond)
++	if err != buf.ErrReadTimeout || len(mb) != 0 || r.prepaid != quantum {
++		t.Fatalf("first read: %v, prepaid %d", err, r.prepaid)
++	}
++	globalRateLimiter.mu.Lock()
++	globalRateLimiter.tokens = 12
++	globalRateLimiter.mu.Unlock()
++	mb, err = r.ReadMultiBufferTimeout(time.Second)
++	defer buf.ReleaseMulti(mb)
++	if err != io.EOF || len(mb) != 1 || mb.Len() != quantum+12 {
++		t.Fatalf("retry: %v, %d bytes", err, mb.Len())
++	}
++}
+diff --git a/app/dispatcher/ratelimit_test.go b/app/dispatcher/ratelimit_test.go
+new file mode 100644
+index 0000000..8ae4312
+--- /dev/null
++++ b/app/dispatcher/ratelimit_test.go
+@@ -0,0 +1,375 @@
++package dispatcher
++
++import (
++	"bytes"
++	"container/heap"
++	"context"
++	"fmt"
 +	"os"
 +	"path/filepath"
 +	"testing"
@@ -445,8 +455,8 @@ index 0000000..15267db
 +	"github.com/xtls/xray-core/common/buf"
 +	"github.com/xtls/xray-core/common/net"
 +	"github.com/xtls/xray-core/common/session"
-+	"github.com/xtls/xray-core/transport"
 +	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/transport"
 +	"github.com/xtls/xray-core/transport/pipe"
 +)
 +
@@ -478,7 +488,7 @@ index 0000000..15267db
 +		t.Fatalf("expected lastRate 1048576, got %d", lastRate)
 +	}
 +
-+	w := &rateLimitWriter{Writer: buf.Discard, Ctx: context.Background()}
++	w := &rateLimitWriter{Writer: buf.Discard, Ctx: context.Background(), flow: new(rateFlow)}
 +	mb := buf.MergeBytes(nil, []byte("hello"))
 +	common.Must(w.WriteMultiBuffer(mb))
 +
@@ -491,101 +501,105 @@ index 0000000..15267db
 +	}
 +}
 +
-+func TestSetRateClampTokens(t *testing.T) {
++func TestRateChangeAndCancel(t *testing.T) {
 +	l := newRateLimiter()
-+
-+	// Initial activation sets tokens = newBurst.
-+	l.setRate(1_000_000)
-+	l.mu.Lock()
-+	if l.rate != 1_000_000 || l.burst != 1_000_000 || l.tokens != 1_000_000 {
-+		t.Fatalf("unexpected state after initial setRate: rate=%v burst=%v tokens=%v", l.rate, l.burst, l.tokens)
-+	}
-+	l.mu.Unlock()
-+
-+	// Lower rate clamps tokens to newBurst.
-+	l.setRate(500_000)
-+	l.mu.Lock()
-+	if l.rate != 500_000 || l.burst != 500_000 || l.tokens > 500_000 {
-+		t.Fatalf("unexpected state after lowering rate: rate=%v burst=%v tokens=%v", l.rate, l.burst, l.tokens)
-+	}
-+	// Drain tokens to 50.
-+	l.tokens = 50
-+	l.last = time.Now()
-+	l.mu.Unlock()
-+
-+	// Increasing rate must NOT refill tokens to newBurst.
-+	l.setRate(800_000)
-+	l.mu.Lock()
-+	if l.tokens > 1000 {
-+		t.Fatalf("tokens refilled on rate increase: tokens=%v, want <= 1000", l.tokens)
-+	}
-+	l.mu.Unlock()
-+
-+	// Resetting to <= 0 disables and resets tokens.
-+	l.setRate(0)
-+	l.mu.Lock()
-+	if l.rate != 0 || l.burst != 0 || l.tokens != 0 {
-+		t.Fatalf("tokens not reset on zero rate: rate=%v burst=%v tokens=%v", l.rate, l.burst, l.tokens)
-+	}
-+	l.mu.Unlock()
-+}
-+
-+func TestSetRateWaitersNoEscapeOnPositiveRateChange(t *testing.T) {
-+	defer globalRateLimiter.setRate(0)
-+
-+	globalRateLimiter.setRate(100)
-+	globalRateLimiter.mu.Lock()
-+	globalRateLimiter.tokens = 0
-+	globalRateLimiter.last = time.Now()
-+	globalRateLimiter.mu.Unlock()
-+
-+	done := make(chan struct{})
-+	go func() {
-+		// Waiting for 10,000 bytes at ~100-200 B/s would take ~50-100 seconds.
-+		waitRateLimit(context.Background(), 10000)
-+		close(done)
-+	}()
-+
-+	time.Sleep(30 * time.Millisecond)
-+
-+	// Change rate from 100 to 200 (positive to positive).
-+	// Waiting goroutine must NOT escape immediately!
-+	globalRateLimiter.setRate(200)
-+
-+	select {
-+	case <-done:
-+		t.Fatal("waiting goroutine escaped early on positive rate change")
-+	case <-time.After(50 * time.Millisecond):
-+		// Expected: goroutine is still waiting.
-+	}
-+
-+	// Now set rate to 0 (unlimited): waiter must wake and return promptly.
-+	globalRateLimiter.setRate(0)
-+	select {
-+	case <-done:
-+		// Succeeded: woke promptly on rate 0.
-+	case <-time.After(250 * time.Millisecond):
-+		t.Fatal("waiting goroutine hung after rate was reset to 0")
-+	}
-+}
-+
-+func TestWaitRateLimitCtxCancel(t *testing.T) {
-+	defer globalRateLimiter.setRate(0)
-+
-+	globalRateLimiter.setRate(100)
-+	globalRateLimiter.mu.Lock()
-+	globalRateLimiter.tokens = 0
-+	globalRateLimiter.last = time.Now()
-+	globalRateLimiter.mu.Unlock()
-+
-+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
++	l.setRate(1)
++	ctx, cancel := context.WithCancel(context.Background())
 +	defer cancel()
++	wait := func() chan error {
++		ch := make(chan error, 1)
++		go func() { ch <- l.wait(ctx, new(rateFlow), quantum) }()
++		deadline := time.Now().Add(time.Second)
++		for l.queued() == 0 && time.Now().Before(deadline) {
++			time.Sleep(time.Millisecond)
++		}
++		if l.queued() == 0 {
++			t.Fatal("request did not enter the queue")
++		}
++		return ch
++	}
++	first := wait()
++	l.setRate(2)
++	select {
++	case <-first:
++		t.Fatal("positive rate change released request")
++	default:
++	}
++	cancel()
++	if err := <-first; err != context.Canceled {
++		t.Fatal(err)
++	}
++	if l.queued() != 0 {
++		t.Fatal("cancel retained request")
++	}
++	ctx = context.Background()
++	second := wait()
++	l.setRate(0)
++	if err := <-second; err != nil {
++		t.Fatal(err)
++	}
++}
 +
-+	start := time.Now()
-+	waitRateLimit(ctx, 10000)
-+	elapsed := time.Since(start)
-+	if elapsed > 250*time.Millisecond {
-+		t.Fatalf("waitRateLimit did not abort promptly on ctx cancel: %v", elapsed)
++func TestVirtualByteService(t *testing.T) {
++	for _, flows := range []int{2, 4} {
++		var q grantQueue
++		var sent [4]int64
++		owner := map[*grant]int{}
++		for i := 0; i < flows; i++ {
++			size := int64(quantum / (1 + i))
++			for j := 1; j <= 100; j++ {
++				g := &grant{bytes: size, finish: uint64(int64(j) * size)}
++				owner[g] = i
++				heap.Push(&q, g)
++			}
++		}
++		for q.Len() > 0 {
++			g := heap.Pop(&q).(*grant)
++			i := owner[g]
++			sent[i] += g.bytes
++			if sent[i] >= 12*quantum {
++				break
++			}
++		}
++		for _, n := range sent[:flows] {
++			if n < 11*quantum || n > 13*quantum {
++				t.Fatalf("unequal service: %v", sent)
++			}
++		}
++	}
++}
++
++type collectingWriter struct{ packets [][]byte }
++
++func (w *collectingWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
++	defer buf.ReleaseMulti(mb)
++	for _, b := range mb {
++		w.packets = append(w.packets, append([]byte(nil), b.Bytes()...))
++	}
++	return nil
++}
++
++func TestPacingPreservesPacketBoundaries(t *testing.T) {
++	globalRateLimiter.setRate(10_000_000)
++	defer globalRateLimiter.setRate(0)
++	next := new(collectingWriter)
++	w := rateLimitWriter{Writer: next, Ctx: context.Background(), flow: new(rateFlow)}
++	var mb buf.MultiBuffer
++	for i := 0; i < 32; i++ {
++		b := buf.New()
++		b.Write(bytes.Repeat([]byte{byte(i)}, 1024))
++		mb = append(mb, b)
++	}
++	if err := w.WriteMultiBuffer(mb); err != nil {
++		t.Fatal(err)
++	}
++	if len(next.packets) != 32 {
++		t.Fatal(len(next.packets))
++	}
++	for i, b := range next.packets {
++		if !bytes.Equal(b, bytes.Repeat([]byte{byte(i)}, 1024)) {
++			t.Fatal(i)
++		}
 +	}
 +}
 +
@@ -672,7 +686,7 @@ index 0000000..15267db
 +}
 +
 +func (d *dummyOutboundManager) GetDefaultHandler() outbound.Handler { return nil }
-+func (d *dummyOutboundManager) GetHandler(string) outbound.Handler   { return nil }
++func (d *dummyOutboundManager) GetHandler(string) outbound.Handler  { return nil }
 +
 +func TestDispatchLinkMarksContext(t *testing.T) {
 +	prev := globalRateLimitEnabled
@@ -702,109 +716,403 @@ index 0000000..15267db
 +	}
 +}
 +
-+func TestIsRateLimitActive(t *testing.T) {
++func TestManagedTrafficAlwaysPaced(t *testing.T) {
 +	prev := globalRateLimitEnabled
-+	defer func() {
-+		globalRateLimitEnabled = prev
-+		globalRateLimiter.setRate(0)
-+	}()
-+
-+	globalRateLimitEnabled = false
-+	globalRateLimiter.setRate(100000)
-+	if IsRateLimitActive(context.Background()) {
-+		t.Fatal("expected IsRateLimitActive = false when globalRateLimitEnabled = false")
-+	}
-+
-+	globalRateLimitEnabled = true
-+	globalRateLimiter.setRate(0)
-+	if IsRateLimitActive(context.Background()) {
-+		t.Fatal("expected IsRateLimitActive = false when rate is 0")
-+	}
-+
-+	globalRateLimiter.setRate(100000)
-+	if !IsRateLimitActive(context.Background()) {
-+		t.Fatal("expected IsRateLimitActive = true when rate > 0 and normal context")
-+	}
-+
-+	apiCtx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: apiInboundTag})
-+	if IsRateLimitActive(apiCtx) {
-+		t.Fatal("expected IsRateLimitActive = false for internal API traffic")
++	defer func() { globalRateLimitEnabled = prev }()
++	for _, enabled := range []bool{false, true} {
++		globalRateLimitEnabled = enabled
++		if ShouldPace(context.Background()) != enabled {
++			t.Fatal(enabled)
++		}
++		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: apiInboundTag})
++		if ShouldPace(ctx) {
++			t.Fatal("paced control plane")
++		}
 +	}
 +}
 +
-+func TestSpliceCopyDisabledWhenRateLimitActive(t *testing.T) {
-+	prev := globalRateLimitEnabled
-+	globalRateLimitEnabled = true
-+	defer func() {
-+		globalRateLimitEnabled = prev
-+		globalRateLimiter.setRate(0)
-+	}()
-+	globalRateLimiter.setRate(100000)
-+
-+	inbound := &session.Inbound{CanSpliceCopy: 1}
-+	ctx := session.ContextWithInbound(context.Background(), inbound)
-+
-+	d := &DefaultDispatcher{}
-+	d.getLink(ctx)
-+	if inbound.CanSpliceCopy != 3 {
-+		t.Fatalf("expected getLink to set CanSpliceCopy=3, got %d", inbound.CanSpliceCopy)
++func TestClosingDirectionReleasesGrant(t *testing.T) {
++	globalRateLimiter.setRate(1)
++	defer globalRateLimiter.setRate(0)
++	flow := new(rateFlow)
++	w := newPacedWriter(context.Background(), buf.Discard, flow)
++	done := make(chan error, 1)
++	go func() { done <- w.WriteMultiBuffer(buf.MergeBytes(nil, []byte("waiting"))) }()
++	deadline := time.Now().Add(time.Second)
++	for globalRateLimiter.queued() == 0 && time.Now().Before(deadline) {
++		time.Sleep(time.Millisecond)
 +	}
-+
-+	inbound2 := &session.Inbound{CanSpliceCopy: 1}
-+	ctx2 := session.ContextWithInbound(context.Background(), inbound2)
-+	r, w := pipe.New()
-+	WrapLink(ctx2, nil, nil, &transport.Link{Reader: r, Writer: w})
-+	if inbound2.CanSpliceCopy != 3 {
-+		t.Fatalf("expected WrapLink to set CanSpliceCopy=3, got %d", inbound2.CanSpliceCopy)
++	if globalRateLimiter.queued() == 0 {
++		t.Fatal("no queued write")
++	}
++	w.Close()
++	select {
++	case err := <-done:
++		if err != context.Canceled {
++			t.Fatal(err)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("close left a waiter")
 +	}
 +}
-diff --git a/app/dispatcher/stats.go b/app/dispatcher/stats.go
-index 8fac019..126dcb0 100644
---- a/app/dispatcher/stats.go
-+++ b/app/dispatcher/stats.go
-@@ -1,17 +1,24 @@
- package dispatcher
- 
- import (
++
++func TestShortWriteWhileBulkWaits(t *testing.T) {
++	l := newRateLimiter()
++	l.setRate(1)
++	defer l.setRate(0)
++	enqueue := func(size int64, want int) <-chan error {
++		result := make(chan error, 1)
++		go func() { result <- l.wait(context.Background(), new(rateFlow), size) }()
++		deadline := time.Now().Add(time.Second)
++		for l.queued() != want && time.Now().Before(deadline) {
++			time.Sleep(time.Millisecond)
++		}
++		if l.queued() != want {
++			t.Fatal("unexpected queue length", l.queued())
++		}
++		return result
++	}
++	bulk := enqueue(quantum, 1)
++	short := enqueue(16, 2)
++	l.mu.Lock()
++	l.tokens = 16
++	l.signal()
++	l.mu.Unlock()
++	select {
++	case err := <-short:
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("small request stalled behind bulk transfer")
++	}
++	select {
++	case <-bulk:
++		t.Fatal("bulk write exceeded its grant")
++	default:
++	}
++}
++
++func TestCoreStartupReusesCurrentRate(t *testing.T) {
++	defer globalRateLimiter.setRate(0)
++	path := filepath.Join(t.TempDir(), "rate")
++	if err := os.WriteFile(path, []byte("1250000"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	var initial int64
++	updateRateLimit(path, &initial)
++	if globalRateLimiter.rate.Load() != 1250000 {
++		t.Fatal("missing startup rate")
++	}
++	now := time.Now()
++	publishTraffic(path+".traffic", now, 0, 0)
++	data, err := os.ReadFile(path + ".traffic")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if string(data) != fmt.Sprintf("%d 0 0\n", now.UnixNano()) {
++		t.Fatalf("restart telemetry: %q", data)
++	}
++}
+diff --git a/app/dispatcher/ratescheduler.go b/app/dispatcher/ratescheduler.go
+new file mode 100644
+index 0000000..ac8b056
+--- /dev/null
++++ b/app/dispatcher/ratescheduler.go
+@@ -0,0 +1,173 @@
++package dispatcher
++
++import (
++	"container/heap"
 +	"context"
++	"sync"
++	"sync/atomic"
++	"time"
++)
 +
- 	"github.com/xtls/xray-core/common"
- 	"github.com/xtls/xray-core/common/buf"
- 	"github.com/xtls/xray-core/features/stats"
- )
- 
- type SizeStatWriter struct {
--	Counter stats.Counter
--	Writer  buf.Writer
-+	Counter       stats.Counter
-+	Writer        buf.Writer
-+	Ctx           context.Context
-+	SkipRateLimit bool
- }
- 
- func (w *SizeStatWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-+	if !w.SkipRateLimit {
-+		waitRateLimit(w.Ctx, int64(mb.Len()))
++const quantum = 16 * 1024
++
++// Both directions use the same virtual byte counter, protected by the scheduler mutex.
++type rateFlow struct{ finish uint64 }
++type grant struct {
++	finish uint64
++	bytes  int64
++	done   chan struct{}
++	index  int
++}
++type grantQueue []*grant
++
++func (q grantQueue) Len() int           { return len(q) }
++func (q grantQueue) Less(i, j int) bool { return q[i].finish < q[j].finish }
++func (q grantQueue) Swap(i, j int) {
++	q[i], q[j] = q[j], q[i]
++	q[i].index = i
++	q[j].index = j
++}
++func (q *grantQueue) Push(x any) {
++	g := x.(*grant)
++	g.index = len(*q)
++	*q = append(*q, g)
++}
++func (q *grantQueue) Pop() any {
++	old := *q
++	last := len(old) - 1
++	g := old[last]
++	old[last] = nil
++	*q = old[:last]
++	g.index = -1
++	return g
++}
++
++type rateLimiter struct {
++	mu      sync.Mutex
++	rate    atomic.Int64
++	tokens  float64
++	last    time.Time
++	virtual uint64
++	pending grantQueue
++	running bool
++	wake    chan struct{}
++}
++
++func newRateLimiter() *rateLimiter    { return &rateLimiter{wake: make(chan struct{}, 1)} }
++func (l *rateLimiter) isActive() bool { return l.rate.Load() > 0 }
++func (l *rateLimiter) queued() int {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return len(l.pending)
++}
++func (l *rateLimiter) signal() {
++	select {
++	case l.wake <- struct{}{}:
++	default:
 +	}
- 	w.Counter.Add(int64(mb.Len()))
- 	return w.Writer.WriteMultiBuffer(mb)
- }
++}
++func (l *rateLimiter) refill(now time.Time) {
++	r := float64(l.rate.Load())
++	// A CPU-capped cgroup may be descheduled for most of a quota period.
++	// Preserve at most one such period of earned service. A rate transition
++	// discards this credit and each connection still competes per quantum.
++	l.tokens = min((float64(quantum) + r*.1), l.tokens+now.Sub(l.last).Seconds()*r)
++	l.last = now
++}
++func (l *rateLimiter) setRate(r int64) {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	l.refill(time.Now())
++	l.rate.Store(r)
++	l.tokens = min(l.tokens, float64(quantum))
++	if r <= 0 {
++		l.tokens = 0
++		for len(l.pending) > 0 {
++			close(heap.Pop(&l.pending).(*grant).done)
++		}
++	}
++	l.signal()
++}
++
++func (l *rateLimiter) wait(ctx context.Context, f *rateFlow, n int64) error {
++	return l.waitRemaining(ctx, f, &n)
++}
++
++func (l *rateLimiter) waitRemaining(ctx context.Context, f *rateFlow, remaining *int64) error {
++	for *remaining > 0 && l.isActive() {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		take := min(*remaining, int64(quantum))
++		l.mu.Lock()
++		if !l.isActive() {
++			l.mu.Unlock()
++			return nil
++		}
++		l.refill(time.Now())
++		if len(l.pending) == 0 && l.tokens >= float64(take) {
++			l.tokens -= float64(take)
++			l.mu.Unlock()
++		} else {
++			f.finish = max(f.finish, l.virtual) + uint64(take)
++			g := &grant{finish: f.finish, bytes: take, done: make(chan struct{})}
++			heap.Push(&l.pending, g)
++			if !l.running {
++				l.running = true
++				go l.serve()
++			} else if g.index == 0 {
++				l.signal()
++			}
++			l.mu.Unlock()
++			select {
++			case <-g.done:
++			case <-ctx.Done():
++				l.mu.Lock()
++				if g.index >= 0 {
++					heap.Remove(&l.pending, g.index)
++					if f.finish == g.finish {
++						f.finish -= uint64(take)
++					}
++					l.signal()
++				} else {
++					*remaining -= take // grant won the race with cancellation
++				}
++				l.mu.Unlock()
++				return ctx.Err()
++			}
++		}
++		*remaining -= take
++	}
++	return ctx.Err()
++}
++
++func (l *rateLimiter) serve() {
++	timer := time.NewTimer(time.Hour)
++	defer timer.Stop()
++	for {
++		l.mu.Lock()
++		if len(l.pending) == 0 {
++			l.running = false
++			l.mu.Unlock()
++			return
++		}
++		l.refill(time.Now())
++		g := l.pending[0]
++		missing := float64(g.bytes) - l.tokens
++		if missing <= 0 {
++			l.tokens -= float64(g.bytes)
++			l.virtual = g.finish
++			heap.Pop(&l.pending)
++			close(g.done)
++			l.mu.Unlock()
++			continue
++		}
++		delay := time.Duration(missing / float64(l.rate.Load()) * float64(time.Second))
++		l.mu.Unlock()
++		timer.Reset(max(delay, time.Microsecond))
++		select {
++		case <-timer.C:
++		case <-l.wake:
++		}
++	}
++}
+diff --git a/app/dispatcher/xudp_reconnect_test.go b/app/dispatcher/xudp_reconnect_test.go
+new file mode 100644
+index 0000000..3d02152
+--- /dev/null
++++ b/app/dispatcher/xudp_reconnect_test.go
+@@ -0,0 +1,103 @@
++package dispatcher_test
++
++import (
++	"context"
++	"github.com/xtls/xray-core/app/dispatcher"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/mux"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++type xudpTestDispatcher struct {
++	dispatcher.DefaultDispatcher
++	opened chan *transport.Link
++}
++
++func (d *xudpTestDispatcher) Dispatch(ctx context.Context, _ net.Destination) (*transport.Link, error) {
++	in, out := d.PacedTestLinks(ctx)
++	d.opened <- out
++	return in, nil
++}
++
++func TestXUDPReconnectKeepsPacedLink(t *testing.T) {
++	setRate, restore := dispatcher.EnablePacingForTest()
++	defer restore()
++	d := &xudpTestDispatcher{opened: make(chan *transport.Link, 2)}
++	target := net.UDPDestination(net.LocalHostIP, 8053)
++	id := [8]byte{'p', 'a', 'c', 'e', 'd', 'u', 'd', 'p'}
++	defer func() {
++		mux.XUDPManager.Lock()
++		x := mux.XUDPManager.Map[id]
++		delete(mux.XUDPManager.Map, id)
++		mux.XUDPManager.Unlock()
++		if x != nil {
++			x.Interrupt()
++		}
++	}()
++	attach := func(b byte) func() {
++		ctx, cancel := context.WithCancel(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{}}))
++		r, w := pipe.New()
++		worker, err := mux.NewServerWorker(ctx, d, &transport.Link{Reader: r, Writer: buf.Discard})
++		if err != nil {
++			t.Fatal(err)
++		}
++		packet := buf.New()
++		packet.UDP = &target
++		meta := mux.FrameMetadata{GlobalID: id, SessionID: 1, SessionStatus: mux.SessionStatusNew, Option: mux.OptionData, Target: target}
++		if err := meta.WriteTo(packet); err != nil {
++			t.Fatal(err)
++		}
++		packet.Write([]byte{0, 1, b})
++		if err := w.WriteMultiBuffer(buf.MultiBuffer{packet}); err != nil {
++			t.Fatal(err)
++		}
++		return func() {
++			cancel()
++			w.Close()
++			<-worker.WaitClosed()
++			until := time.Now().Add(time.Second)
++			for time.Now().Before(until) {
++				mux.XUDPManager.Lock()
++				x := mux.XUDPManager.Map[id]
++				detached := x != nil && x.Status == mux.Expiring
++				mux.XUDPManager.Unlock()
++				if detached {
++					return
++				}
++				time.Sleep(time.Millisecond)
++			}
++			t.Fatal("mux did not detach")
++		}
++	}
++	detach := attach('a')
++	var link *transport.Link
++	select {
++	case link = <-d.opened:
++	case <-time.After(time.Second):
++		t.Fatal("missing UDP dispatch")
++	}
++	read := func(want string) {
++		mb, err := link.Reader.(buf.TimeoutReader).ReadMultiBufferTimeout(time.Second)
++		defer buf.ReleaseMulti(mb)
++		if err != nil || mb.String() != want {
++			t.Fatalf("original UDP link: got %q, %v; want %q", mb.String(), err, want)
++		}
++	}
++	read("a")
++	detach()
++	setRate(1_000_000)
++	detach = attach('b')
++	read("b")
++	detach()
++	select {
++	case <-d.opened:
++		t.Fatal("reconnect dispatched a replacement link")
++	default:
++	}
++}
 diff --git a/proxy/proxy.go b/proxy/proxy.go
-index ab7d7ab..82e94ab 100644
+index ab7d7ab..794810b 100644
 --- a/proxy/proxy.go
 +++ b/proxy/proxy.go
-@@ -739,8 +739,14 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
+@@ -739,6 +739,9 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
  			return readV(ctx, reader, writer, timer, readCounter)
  		}
  	}
-+	if dispatcher.IsRateLimitActive(ctx) {
++	if dispatcher.ShouldPace(ctx) {
 +		return readV(ctx, reader, writer, timer, readCounter)
 +	}
  
  	for {
-+		if dispatcher.IsRateLimitActive(ctx) {
-+			return readV(ctx, reader, writer, timer, readCounter)
-+		}
  		inbound := session.InboundFromContext(ctx)
- 		outbounds := session.OutboundsFromContext(ctx)
- 		splice := inbound.CanSpliceCopy == 1

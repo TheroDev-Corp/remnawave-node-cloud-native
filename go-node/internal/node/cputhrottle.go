@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	cpuSampleInterval       = time.Second
-	engageConsecutiveTicks  = 3
+	cpuSampleInterval = time.Second
+
 	adjustIntervalTicks     = 3
-	decreaseFactor          = 0.75
+	decreaseFactor          = 0.90
 	releaseConsecutiveTicks = 5
 	BytesPerMbps            = 125_000.0 // 1 Mbps = 1,000,000 bits/s = 125,000 bytes/s
 	bytesPerMbps            = BytesPerMbps
@@ -34,7 +34,7 @@ func ActiveCPUThrottle() *CPUThrottle {
 }
 
 // CPUThrottle samples host CPU usage from /proc/stat and applies an adaptive
-// AIMD speed limit to Xray via an atomically updated control file.
+// shared speed limit to Xray via an atomically updated control file.
 type CPUThrottle struct {
 	cfg         *config.Config
 	log         *slog.Logger
@@ -60,7 +60,9 @@ type CPUThrottle struct {
 	highStreak    int
 	lowStreak     int
 	releaseStreak int
-	throughputFn  func() float64
+	highMbps      float64
+	highSamples   int
+	lastSample    int64
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -120,15 +122,28 @@ func newCPUThrottle(cfg *config.Config, log *slog.Logger, statPath, controlFile 
 	}
 }
 
-// SetThroughputFunc configures the traffic measurement callback returning
-// current traffic in Mbps, or -1 if unavailable.
-func (ct *CPUThrottle) SetThroughputFunc(fn func() float64) {
-	if ct == nil {
-		return
+// Each Xray sample describes one completed interval, including both directions.
+type trafficSample struct {
+	mbps   float64
+	queued bool
+	fresh  bool
+}
+
+func (ct *CPUThrottle) traffic(now time.Time) trafficSample {
+	data, err := os.ReadFile(ct.controlFile + ".traffic")
+	if err != nil {
+		return trafficSample{}
 	}
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-	ct.throughputFn = fn
+	var stamp, bps, pending int64
+	if _, err := fmt.Sscan(string(data), &stamp, &bps, &pending); err != nil || bps < 0 || pending < 0 || stamp <= ct.lastSample {
+		return trafficSample{}
+	}
+	age := now.Sub(time.Unix(0, stamp))
+	if age < 0 || age > 2*time.Second {
+		return trafficSample{}
+	}
+	ct.lastSample = stamp
+	return trafficSample{float64(bps) / BytesPerMbps, pending > 0, true}
 }
 
 // SetCgroupPaths overrides the default cgroup v2 cpu.stat and cpu.max paths.
@@ -152,6 +167,7 @@ func (ct *CPUThrottle) SetSupported(supported bool) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	ct.supported = supported
+	ct.highSamples, ct.highMbps = 0, 0
 	if !supported {
 		ct.active = false
 		ct.rateMbps = 0
@@ -313,100 +329,51 @@ func (ct *CPUThrottle) stepLocked(ratio float64, containerShareCheck bool) {
 
 	highRatio := float64(ct.cfg.CPUThrottleHighPct) / 100.0
 	lowRatio := float64(ct.cfg.CPUThrottleLowPct) / 100.0
-	maxRate := float64(ct.cfg.CPUThrottleRateMbps)
+	sample := ct.traffic(time.Now())
 	minRate := float64(ct.cfg.CPUThrottleMinMbps)
-
-	if !ct.active {
-		if ratio >= highRatio {
-			if containerShareCheck {
-				ct.highStreak = 0
-			} else {
-				ct.highStreak++
-				if ct.highStreak >= engageConsecutiveTicks {
-					ct.active = true
-					if ct.throughputFn != nil {
-						measuredMbps := ct.throughputFn()
-						if measuredMbps > 0 {
-							ct.rateMbps = math.Min(maxRate, math.Max(minRate, measuredMbps*decreaseFactor))
-						} else {
-							ct.rateMbps = maxRate
-						}
-					} else {
-						ct.rateMbps = maxRate
-					}
-					ct.highStreak = 0
+	switch {
+	case ratio >= highRatio && !containerShareCheck:
+		ct.lowStreak, ct.releaseStreak = 0, 0
+		ct.highStreak++
+		if sample.fresh {
+			ct.highMbps += sample.mbps
+			ct.highSamples++
+		}
+		if ct.highStreak >= adjustIntervalTicks {
+			base := ct.rateMbps
+			if !ct.active {
+				base = float64(ct.cfg.CPUThrottleRateMbps)
+				if ct.highSamples > 0 {
+					base = ct.highMbps / float64(ct.highSamples)
+				}
+			}
+			if base > 0 {
+				ct.active = true
+				ct.rateMbps = math.Max(minRate, base*decreaseFactor)
+			}
+			ct.highStreak, ct.highSamples, ct.highMbps = 0, 0, 0
+		}
+	default:
+		ct.highStreak, ct.highSamples, ct.highMbps = 0, 0, 0
+		if ct.active && ratio <= lowRatio && sample.fresh {
+			if sample.queued || sample.mbps >= ct.rateMbps*0.8 {
+				ct.releaseStreak = 0
+				ct.lowStreak++
+				if ct.lowStreak >= adjustIntervalTicks {
+					ct.rateMbps = math.Min(float64(math.MaxInt64/2)/BytesPerMbps, ct.rateMbps*1.10)
 					ct.lowStreak = 0
+				}
+			} else {
+				ct.lowStreak = 0
+				ct.releaseStreak++
+				if ct.releaseStreak >= releaseConsecutiveTicks {
+					ct.active = false
+					ct.rateMbps = 0
 					ct.releaseStreak = 0
-					ct.log.Info("CPU throttle engaged",
-						"cpu_pct", fmt.Sprintf("%.1f", ratio*100),
-						"rate_mbps", ct.rateMbps,
-					)
 				}
 			}
 		} else {
-			ct.highStreak = 0
-		}
-	} else {
-		switch {
-		case ratio >= highRatio:
-			ct.lowStreak = 0
-			ct.releaseStreak = 0
-			if containerShareCheck {
-				ct.highStreak = 0
-			} else {
-				ct.highStreak++
-				if ct.highStreak >= adjustIntervalTicks {
-					ct.highStreak = 0
-					next := math.Max(minRate, ct.rateMbps*decreaseFactor)
-					if next != ct.rateMbps {
-						ct.rateMbps = next
-						ct.log.Info("CPU throttle decreased",
-							"cpu_pct", fmt.Sprintf("%.1f", ratio*100),
-							"rate_mbps", fmt.Sprintf("%.2f", ct.rateMbps),
-						)
-					}
-				}
-			}
-		case ratio <= lowRatio:
-			ct.highStreak = 0
-			ct.lowStreak++
-
-			measuredMbps := float64(-1)
-			if ct.throughputFn != nil {
-				measuredMbps = ct.throughputFn()
-			}
-
-			saturated := measuredMbps >= 0 && measuredMbps >= ct.rateMbps*0.80
-			if saturated {
-				ct.releaseStreak = 0
-			} else {
-				if measuredMbps >= 0 || ct.rateMbps >= maxRate {
-					ct.releaseStreak++
-				}
-			}
-
-			if ct.releaseStreak >= releaseConsecutiveTicks {
-				ct.active = false
-				ct.rateMbps = 0
-				ct.lowStreak = 0
-				ct.releaseStreak = 0
-				ct.log.Info("CPU throttle released",
-					"cpu_pct", fmt.Sprintf("%.1f", ratio*100),
-				)
-			} else if ct.rateMbps < maxRate && ct.lowStreak >= adjustIntervalTicks {
-				ct.lowStreak = 0
-				stepUp := math.Max(5.0, maxRate*0.10)
-				ct.rateMbps = math.Min(maxRate, ct.rateMbps+stepUp)
-				ct.log.Info("CPU throttle increased",
-					"cpu_pct", fmt.Sprintf("%.1f", ratio*100),
-					"rate_mbps", fmt.Sprintf("%.2f", ct.rateMbps),
-				)
-			}
-		default:
-			// Hysteresis deadband: hold current rate steady.
-			ct.highStreak = 0
-			ct.lowStreak = 0
-			ct.releaseStreak = 0
+			ct.lowStreak, ct.releaseStreak = 0, 0
 		}
 	}
 
@@ -422,6 +389,7 @@ func (ct *CPUThrottle) stepLocked(ratio float64, containerShareCheck bool) {
 			ct.rateBytes = prevRateBytes
 			return
 		}
+		ct.log.Info("CPU throttle updated", "cpu_ratio", ratio, "rate_mbps", ct.rateMbps)
 		ct.lastWritten = targetBytes
 	}
 	ct.rateBytes = targetBytes
@@ -537,7 +505,7 @@ func readCgroupMax(path string) (quota, period float64, ok bool) {
 
 // HasRateLimitSupport checks whether the Xray core binary at binPath contains
 // the rate-limiting dispatcher patch by inspecting its binary content for
-// "XRAY_RATELIMIT_FILE".
+// "XRAY_RATELIMIT_FILE_V2".
 func HasRateLimitSupport(binPath string) bool {
 	if binPath == "" {
 		return false
@@ -552,7 +520,7 @@ func HasRateLimitSupport(binPath string) bool {
 	}
 	defer f.Close()
 
-	needle := []byte("XRAY_RATELIMIT_FILE")
+	needle := []byte("XRAY_RATELIMIT_FILE_V2")
 	buf := make([]byte, 64*1024)
 	overlap := len(needle) - 1
 	var prev []byte

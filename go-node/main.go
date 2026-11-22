@@ -69,16 +69,6 @@ func main() {
 	stopNet := make(chan struct{})
 	defer close(stopNet)
 	netStats := node.StartNetStats(stopNet)
-	if cpuThrottle != nil && netStats != nil {
-		cpuThrottle.SetThroughputFunc(func() float64 {
-			r := netStats.Default()
-			if r == nil {
-				return -1
-			}
-			maxBps := max(r.RxBytesPerSec, r.TxBytesPerSec)
-			return maxBps / node.BytesPerMbps
-		})
-	}
 	// HA: Lease election when enabled (else always leader), peer sync when a
 	// headless Service is configured.
 	var state ha.State = ha.Standalone{ID: cfg.PodName}

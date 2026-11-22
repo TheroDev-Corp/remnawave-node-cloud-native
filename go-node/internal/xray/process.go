@@ -60,7 +60,7 @@ func NewProcess(bin, logPath string, log *slog.Logger) *Process {
 	return &Process{bin: bin, logPath: logPath, log: log}
 }
 
-// SetRatelimitFile configures the XRAY_RATELIMIT_FILE environment variable
+// SetRatelimitFile configures the versioned dispatcher control file
 // passed to the xray child process on subsequent Start calls.
 func (p *Process) SetRatelimitFile(path string) {
 	p.mu.Lock()
@@ -84,11 +84,11 @@ func (p *Process) Start(config []byte) error {
 	if rlFile != "" {
 		filtered := make([]string, 0, len(env)+1)
 		for _, kv := range env {
-			if !strings.HasPrefix(kv, "XRAY_RATELIMIT_FILE=") {
+			if !strings.HasPrefix(kv, "XRAY_RATELIMIT_FILE=") && !strings.HasPrefix(kv, "XRAY_RATELIMIT_FILE_V2=") {
 				filtered = append(filtered, kv)
 			}
 		}
-		env = append(filtered, "XRAY_RATELIMIT_FILE="+rlFile)
+		env = append(filtered, "XRAY_RATELIMIT_FILE_V2="+rlFile)
 	}
 	cmd.Env = env
 	cmd.SysProcAttr = sysProcAttr()

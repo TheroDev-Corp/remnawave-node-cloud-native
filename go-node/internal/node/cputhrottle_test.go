@@ -113,183 +113,84 @@ func TestCPUThrottleTickFromProcStat(t *testing.T) {
 	}
 }
 
-func TestCPUThrottleAIMDLifecycle(t *testing.T) {
-	dir := t.TempDir()
-	ctrlPath := filepath.Join(dir, "rw-ratelimit")
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ct := newCPUThrottle(testThrottleConfig(ctrlPath), log, "", ctrlPath)
-
-	step := func(r float64) (bool, int64) {
-		ct.mu.Lock()
-		ct.stepLocked(r, false)
-		ct.mu.Unlock()
-		_, active, rate := ct.Stats()
-		return active, rate
-	}
-
-	// 2 ticks >= 90% should NOT engage yet; 1 low tick resets streak.
-	if active, _ := step(0.92); active {
-		t.Fatal("engaged on tick 1")
-	}
-	if active, _ := step(0.92); active {
-		t.Fatal("engaged on tick 2")
-	}
-	if active, _ := step(0.80); active {
-		t.Fatal("engaged after streak broken")
-	}
-
-	// 3 consecutive ticks >= 90% engages at RateMbps (50 Mbps = 6,250,000 B/s).
-	step(0.91)
-	step(0.92)
-	active, rate := step(0.93)
-	if !active || rate != 50*125_000 {
-		t.Fatalf("expected engage at 6250000 B/s, got active=%v rate=%d", active, rate)
-	}
-	if got := readControlFile(t, ctrlPath); got != 50*125_000 {
-		t.Fatalf("control file = %d, want %d", got, 50*125_000)
-	}
-
-	// Sustained >= 90% steps down by 0.75x every 3 ticks, clamped at MinMbps (10 Mbps = 1,250,000 B/s).
-	for i := 0; i < 3; i++ {
-		step(0.95)
-	}
-	_, rate = ct.rateSnapshot()
-	want37_5 := int64(37.5 * 125_000)
-	if rate != want37_5 {
-		t.Fatalf("after 1st decrease: rate=%d, want %d", rate, want37_5)
-	}
-
-	// Drive down to MinMbps floor.
-	for i := 0; i < 20; i++ {
-		step(0.99)
-	}
-	if active, rate = ct.rateSnapshot(); !active || rate != 10*125_000 {
-		t.Fatalf("expected floor 1250000 B/s, got active=%v rate=%d", active, rate)
-	}
-
-	// Deadband (75% < cpu < 90%) holds rate steady.
-	for i := 0; i < 6; i++ {
-		active, rate = step(0.82)
-		if !active || rate != 10*125_000 {
-			t.Fatalf("deadband changed rate: active=%v rate=%d", active, rate)
+func TestAdaptiveRateLifecycle(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "rate")
+	ct := newCPUThrottle(testThrottleConfig(file), slog.New(slog.NewTextHandler(io.Discard, nil)), "", file)
+	tick := func(cpu, mbps float64, queued bool, repeat int) {
+		t.Helper()
+		for i := 0; i < repeat; i++ {
+			if mbps >= 0 {
+				pending := 0
+				if queued {
+					pending = 1
+				}
+				data := fmt.Sprintf("%d %d %d", time.Now().UnixNano(), int64(mbps*BytesPerMbps), pending)
+				if err := os.WriteFile(file+".traffic", []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ct.stepLocked(cpu, false)
 		}
 	}
-
-	// Sustained <= 75% steps up additively (+5 Mbps per 3 ticks) up to 50 Mbps, then releases to 0.
-	for i := 0; i < 3; i++ {
-		step(0.60)
-	}
-	if active, rate = ct.rateSnapshot(); !active || rate != 15*125_000 {
-		t.Fatalf("after 1st increase: active=%v rate=%d, want %d", active, rate, 15*125_000)
-	}
-
-	// Continue <= 75% until released.
-	for i := 0; i < 35; i++ {
-		active, rate = step(0.50)
-		if !active {
-			break
+	want := func(mbps float64) {
+		t.Helper()
+		if got := readControlFile(t, file); got != int64(mbps*BytesPerMbps) {
+			t.Fatalf("limit %d; want %.3f Mbps", got, mbps)
 		}
 	}
-	if active || rate != 0 {
-		t.Fatalf("expected release to unlimited, got active=%v rate=%d", active, rate)
-	}
-	if got := readControlFile(t, ctrlPath); got != 0 {
-		t.Fatalf("control file after release = %d, want 0", got)
-	}
-
-	// Engage again and verify shutdown resets control file to 0.
-	step(0.95)
-	step(0.95)
-	step(0.95)
-	if got := readControlFile(t, ctrlPath); got == 0 {
-		t.Fatal("expected non-zero control file before shutdown")
-	}
+	tick(.95, 0, false, 3)
+	want(0)
+	tick(.95, 100, false, 1)
+	tick(.95, 200, false, 1)
+	tick(.95, 300, false, 1)
+	want(180)
+	tick(.95, 180, true, 3)
+	want(162)
+	tick(.95, 162, true, 3)
+	want(145.8)
+	tick(.80, 145, true, 4)
+	want(145.8)
+	tick(.99, 100, true, 100)
+	want(10)
+	tick(.6, 2, true, 3)
+	want(11)
+	tick(.6, 1, false, 4)
+	want(11)
+	tick(.6, -1, false, 6)
+	want(11) // rereading one sample cannot release a limit
+	tick(.6, 1, false, 5)
+	want(0)
+	tick(.99, -1, false, 3)
+	want(45)
 	ct.shutdown()
-	if got := readControlFile(t, ctrlPath); got != 0 {
-		t.Fatalf("control file after shutdown = %d, want 0", got)
-	}
+	want(0)
 }
 
-func (ct *CPUThrottle) rateSnapshot() (bool, int64) {
-	_, active, rate := ct.Stats()
-	return active, rate
-}
-
-func TestCPUThrottleThroughputAIMD(t *testing.T) {
-	dir := t.TempDir()
-	ctrlPath := filepath.Join(dir, "rw-ratelimit")
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ct := newCPUThrottle(testThrottleConfig(ctrlPath), log, "", ctrlPath)
-
-	var throughput float64 = -1
-	ct.SetThroughputFunc(func() float64 {
-		return throughput
-	})
-
-	step := func(r float64) (bool, int64) {
-		ct.mu.Lock()
-		ct.stepLocked(r, false)
-		ct.mu.Unlock()
-		_, active, rate := ct.Stats()
-		return active, rate
-	}
-
-	// 1. Initial engage with measured throughput:
-	// Traffic is 40 Mbps. 40 * 0.75 = 30 Mbps (between min 10 and max 50).
-	throughput = 40.0
-	step(0.95)
-	step(0.95)
-	active, rate := step(0.95)
-	if !active || rate != 30*125_000 {
-		t.Fatalf("expected initial engage at 30 Mbps (3750000 B/s), got active=%v rate=%d", active, rate)
-	}
-
-	// 2. Saturated traffic ceiling hold:
-	// Step up to maxRate (50 Mbps).
-	for i := 0; i < 30; i++ {
-		step(0.60)
-		if ct.rateMbps >= 50 {
-			break
+func TestTrafficSampleFreshness(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "rate")
+	ct := newCPUThrottle(testThrottleConfig(file), slog.Default(), "", file)
+	now := time.Now()
+	write := func(at time.Time, bps int64) {
+		if err := os.WriteFile(file+".traffic", []byte(fmt.Sprintf("%d %d 0", at.UnixNano(), bps)), 0600); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if ct.rateMbps != 50 {
-		t.Fatalf("expected rate to reach maxRate 50 Mbps, got %v", ct.rateMbps)
+	write(now.Add(-5*time.Second), 100)
+	if ct.traffic(now).fresh {
+		t.Fatal("accepted stale sample")
 	}
-
-	// Traffic is still saturating the ceiling (45 Mbps >= 50 * 0.80 = 40 Mbps).
-	throughput = 45.0
-	for i := 0; i < 10; i++ {
-		active, rate = step(0.60)
-		if !active || rate != 50*125_000 {
-			t.Fatalf("saturated ceiling hold failed on tick %d: active=%v rate=%d", i, active, rate)
-		}
+	write(now, 0)
+	if s := ct.traffic(now); !s.fresh || s.mbps != 0 {
+		t.Fatal(s)
 	}
-
-	// 3. Unsaturated traffic releases after 5 ticks:
-	// Traffic drops to 20 Mbps (< 40 Mbps).
-	throughput = 20.0
-	for i := 0; i < 5; i++ {
-		active, rate = step(0.60)
+	if ct.traffic(now).fresh {
+		t.Fatal("duplicate sample")
 	}
-	if active || rate != 0 {
-		t.Fatalf("expected release to unlimited when unsaturated, got active=%v rate=%d", active, rate)
-	}
-
-	// 4. Unsaturated release before reaching maxRate:
-	// Re-engage at 30 Mbps, then drop traffic to 5 Mbps (< 30 * 0.80 = 24 Mbps).
-	throughput = 40.0
-	step(0.95)
-	step(0.95)
-	step(0.95) // engaged at 30 Mbps
-	throughput = 5.0
-	for i := 0; i < 5; i++ {
-		active, rate = step(0.60)
-	}
-	if active || rate != 0 {
-		t.Fatalf("expected premature release when traffic dropped way below limit, got active=%v rate=%d", active, rate)
+	write(now.Add(time.Second), 125000)
+	if s := ct.traffic(now.Add(time.Second)); !s.fresh || s.mbps != 1 {
+		t.Fatal("new core sample", s)
 	}
 }
-
 func TestCPUThrottleCgroupV2(t *testing.T) {
 	dir := t.TempDir()
 	statPath := filepath.Join(dir, "stat")
@@ -372,7 +273,7 @@ func TestHasRateLimitSupport(t *testing.T) {
 	unpatchedBin := filepath.Join(dir, "xray-stock")
 	symlinkBin := filepath.Join(dir, "xray-symlink")
 
-	if err := os.WriteFile(patchedBin, []byte("binary data with XRAY_RATELIMIT_FILE embedded inside"), 0o755); err != nil {
+	if err := os.WriteFile(patchedBin, []byte("binary data with XRAY_RATELIMIT_FILE_V2 embedded inside"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(unpatchedBin, []byte("binary data with no such token"), 0o755); err != nil {
@@ -393,6 +294,29 @@ func TestHasRateLimitSupport(t *testing.T) {
 	}
 	if HasRateLimitSupport(filepath.Join(dir, "non-existent")) {
 		t.Error("expected HasRateLimitSupport = false for non-existent file")
+	}
+}
+
+func TestLegacyCoreDoesNotKeepFallbackLimit(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "legacy-xray")
+	if err := os.WriteFile(binary, []byte("XRAY_RATELIMIT_FILE"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "limit")
+	ct := newCPUThrottle(testThrottleConfig(path), slog.Default(), "", path)
+	for i := 0; i < 3; i++ {
+		ct.stepLocked(.99, false)
+	}
+	if readControlFile(t, path) == 0 {
+		t.Fatal("missing pre-switch limit")
+	}
+	ct.SetSupported(HasRateLimitSupport(binary))
+	for _, cpu := range []float64{.99, .99, .99, .30, .30, .30, .30, .30} {
+		ct.stepLocked(cpu, false)
+		if ct.active || readControlFile(t, path) != 0 {
+			t.Fatal("legacy core retained an adaptive limit")
+		}
 	}
 }
 

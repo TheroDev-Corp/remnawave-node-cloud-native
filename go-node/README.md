@@ -238,9 +238,9 @@ How it stays out of the panel's way:
 
 `internal/node/metrics_e2e_test.go` checks all of this against a real xray: burstObservatory with two live relays and a dead one behind leastLoad and leastPing balancers, real downloads with panel resets between scrapes, online users (the client leaves from the host's LAN address), and an xray SIGKILL. Every scrape is parsed by a strict reader of the text format.
 
-## Adaptive CPU Throttling (AIMD)
+## Adaptive CPU Throttling
 
-When CPU usage spikes on a node due to cryptographic overhead or connection surges, the adaptive userspace CPU throttling controller engages an Additive Increase / Multiplicative Decrease (AIMD) token-bucket speed limit on Xray traffic. It runs strictly as `nobody:nogroup` (65534:65534) with zero privileges and drops all Linux capabilities, communicating with the patched Xray dispatcher via atomic updates to `/tmp/rw-ratelimit`.
+When enabled, the controller samples CPU every second. After three high samples it sets a shared limit at 90% of the measured user traffic, then reduces it by 10% every three seconds of sustained overload. At low CPU, sustained demand raises the limit by 10% every three seconds. Five fresh samples below 80% utilization with no waiting traffic release it. The dispatcher publishes both directions and queue occupancy in `<control file>.traffic`. Managed connections use paced userspace copying even before the first limit. With the feature disabled Xray retains its normal copying path. Deploy the bundled Xray together with the Go node for connection fairness and live traffic feedback. The node enables adaptive limiting only for cores advertising the V2 control-file protocol. Selecting a legacy core clears the adaptive limit.
 
 ### Environment Variables
 
@@ -249,8 +249,8 @@ When CPU usage spikes on a node due to cryptographic overhead or connection surg
 | `CPU_THROTTLE_ENABLED` | bool | `false` | Enable the CPU throttle controller |
 | `CPU_THROTTLE_HIGH_PCT` | int | `90` | Upper CPU usage threshold percent (50..99) to engage or step down speed |
 | `CPU_THROTTLE_LOW_PCT` | int | `75` | Lower CPU usage threshold percent (0 < low < high) to step up speed or release |
-| `CPU_THROTTLE_RATE_MBPS` | int | `50` | Initial rate ceiling (Mbps) when throttling engages |
-| `CPU_THROTTLE_MIN_MBPS` | int | `10` | Minimum rate limit floor (Mbps) for AIMD decrease steps |
+| `CPU_THROTTLE_RATE_MBPS` | int | `50` | Fallback throughput estimate in Mbps when no fresh Xray measurement is available (first limit is 90% of this estimate, subject to the floor) |
+| `CPU_THROTTLE_MIN_MBPS` | int | `10` | Minimum rate limit floor (Mbps) during overload |
 | `CPU_THROTTLE_CONTROL_FILE` | string | `/tmp/rw-ratelimit` | Path to the rate limit control file read by Xray |
 
 ### Metrics
