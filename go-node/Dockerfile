@@ -14,8 +14,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS xray
-ARG XRAY_CORE_VERSION=v26.7.28
-ARG XRAY_CORE_COMMIT=5ca6f4b7d4dc20a881d4330e498892697627ec0c
+ARG XRAY_CORE_VERSION=v26.11.9
+ARG XRAY_CORE_COMMIT=676eaf66f8f05d4d558ee7a74b4736623d3feeb9
 ARG UPSTREAM_REPO=XTLS
 ARG TARGETOS TARGETARCH
 COPY patches/xray-ratelimit.patch /tmp/xray-ratelimit.patch

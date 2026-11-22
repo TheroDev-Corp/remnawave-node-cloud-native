@@ -43,7 +43,7 @@ testdata/node           fixture.mjs: runs the TS node's own code/packages for cr
 
 ```bash
 go test ./...                              # unit + TLS end-to-end
-XRAY_BINARY=/path/to/xray go test ./...    # + supervisor tests against a real xray v26.7.28 (the pinned version)
+XRAY_BINARY=/path/to/xray go test ./...    # + supervisor tests against a real xray v26.11.9 (the pinned version)
 ```
 
 The cross-checks run when `node` is installed and `npm ci` has been run in the repo root:
@@ -128,7 +128,7 @@ KIND_CONTEXT=kind-rwnode KIND_IMAGE=remnawave-node-go:dev go test -v -timeout 30
 
 ## Image and resources (milestone 5)
 
-`Dockerfile` builds a static Go binary (`CGO_ENABLED=0`) and copies it onto `scratch` with what the TS image ships next to the node: xray-core v26.7.28 (`/usr/local/bin/xray`, `rw-core` symlink, geoip/geosite), geocheck 0.3.0, `asn-prefixes.lmdb`, and CA certificates. Downloads are checksum-verified like in `docker/Dockerfile`. No shell, no s6, no Node.js.
+`Dockerfile` builds a static Go binary (`CGO_ENABLED=0`) and copies it onto `scratch` with xray-core v26.11.9 built with the REMNA-1 patch (`/usr/local/bin/xray`, `rw-core` symlink, geoip/geosite), geocheck 0.3.0, `asn-prefixes.lmdb`, and CA certificates. Downloads are checksum-verified like in `docker/Dockerfile`. No shell, no s6, no Node.js.
 
 ```bash
 docker buildx build -t remnawave-node-go go-node
@@ -146,7 +146,7 @@ Measured by the parity harness, both images amd64 on the same colima VM (Rosetta
 | CPU, idle | 0.11–0.25 % | 0.05–0.09 % |
 | Processes/threads (PIDs) | 51–53 | 19–22 |
 
-xray-core is the same binary in both, so the difference is the node itself: Node.js + V8 (whose heap grows with available memory) and s6 versus one Go process.
+The measurements above compare the node runtimes: Node.js + V8 (whose heap grows with available memory) and s6 versus one Go process.
 
 ## Runs as nobody
 

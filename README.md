@@ -2,7 +2,7 @@
 
 > Высокодоступный (Active-Passive / Hot-Standby) форк официального узла [Remnawave Node](https://github.com/remnawave/node), полностью переписанный на **Go**, оптимизированный для работы в Kubernetes без `hostNetwork`, работающий под непривилегированным пользователем `nobody` (`65534:65534`) на минимальном образе `scratch`.
 
-[![Version](https://img.shields.io/badge/version-v3.5.3--HA-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-v3.5.4--HA-blue.svg)](package.json)
 [![Runtime](https://img.shields.io/badge/runtime-Go_1.27_/_scratch-00ADD8.svg)](go-node)
 [![Security](https://img.shields.io/badge/security-nobody_(65534)-green.svg)](go-node/Dockerfile)
 [![Prometheus](https://img.shields.io/badge/metrics-prometheus_ready-E6522C.svg)](#7-встроенные-метрики-prometheus-metrics_port)
@@ -24,7 +24,7 @@
 ### Миграция на Go (начиная с релиза v3.5.0-HA)
 
 Для решения архитектурных проблем форк был изначально доработан на TypeScript/NestJS, а затем **полностью переписан на чистом Go** ([`go-node/`](go-node/)) как 100% drop-in замена:
-- Все релизные образы, начиная с версии **`v3.5.0-HA`** (включая текущую `v3.5.3-HA`), собираются исключительно из директории [`go-node/`](go-node/).
+- Все релизные образы, начиная с версии **`v3.5.0-HA`** (включая текущую `v3.5.4-HA`), собираются исключительно из директории [`go-node/`](go-node/).
 - Исходный код узла на TypeScript в [`src/`](src/) сохранён в репозитории как замороженная эталонная реализация (reference implementation) для сверки протоколов и кросс-проверок контрактов.
 - Стоковая панель управления Remnawave работает с Go-узлом без малейших изменений (пройдены тесты паритета по 54 контрольным сценариям и всем маршрутам API).
 
@@ -221,7 +221,7 @@ replicaCount: 2
 node:
   image:
     repository: ghcr.io/therodev-corp/remnawave-node-cloud-native
-    tag: 3.5.3-HA
+    tag: 3.5.4-HA
     pullPolicy: Always
   apiPort: 2222
   healthPort: 3000
